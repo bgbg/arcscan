@@ -26,16 +26,19 @@ Batch processing allows you to analyze multiple YouTube videos from a CSV file, 
 
 ### 1. Prepare Your CSV File
 
-Create a CSV file with `date,name,url` columns:
+Create a CSV file with `date,name,person,url` columns:
 
 ```csv
-date,name,url
-2011-05-24,נאום ראש הממשלה בנימין נתניהו בפני שני בתי הקונגרס של ארה"ב,https://www.youtube.com/watch?v=4H3Kyt1iGEE
-2021-06-13,נאום ראש הממשלה נפתלי בנט במליאת הכנסת,https://www.youtube.com/watch?v=mqZam_BkTDM
-2022-07-02,הצהרת ראש הממשלה יאיר לפיד עם כניסתו לתפקיד,https://www.youtube.com/watch?v=YYx2BHzxNKI
+date,name,person,url
+2011-05-24,נאום ראש הממשלה בנימין נתניהו בפני שני בתי הקונגרס של ארה"ב,Benjamin Netanyahu,https://www.youtube.com/watch?v=4H3Kyt1iGEE
+2021-06-13,נאום ראש הממשלה נפתלי בנט במליאת הכנסת,Naftali Bennett,https://www.youtube.com/watch?v=mqZam_BkTDM
+2022-07-02,הצהרת ראש הממשלה יאיר לפיד עם כניסתו לתפקיד,Yair Lapid,https://www.youtube.com/watch?v=YYx2BHzxNKI
 ```
 
-**Note**: The `name` field should contain the politician's name or a description that includes it. The system will attempt to extract the politician name automatically.
+**Note**:
+- The `name` field contains the Hebrew title/description of the speech
+- The `person` field contains the politician's name in English (optional but recommended)
+- If `person` is provided, it will be used directly; otherwise the system will attempt to extract the politician name from the `name` field automatically
 
 ### 2. Run Batch Analysis
 
@@ -77,7 +80,7 @@ Then make API requests:
 curl -X POST http://localhost:8000/batch/analyze \
   -H "Content-Type: application/json" \
   -d '{
-    "csv_data": "date,name,url\n2011-05-24,Netanyahu UN Speech,https://www.youtube.com/watch?v=...",
+    "csv_data": "date,name,person,url\n2011-05-24,Netanyahu UN Speech,Benjamin Netanyahu,https://www.youtube.com/watch?v=...",
     "skip_existing": true
   }'
 
@@ -149,7 +152,7 @@ Process batch of videos from CSV data.
 **Request Body**:
 ```json
 {
-  "csv_data": "date,name,url\n...",
+  "csv_data": "date,name,person,url\n...",
   "user_id": "optional-user-id",
   "sync_firebase": false,
   "skip_existing": true
@@ -365,9 +368,9 @@ If no known pattern matches, the name is set to "Unknown" and logged.
 ```bash
 # 1. Prepare CSV with video list
 cat > videos.csv << EOF
-date,name,url
-2023-01-01,Netanyahu Speech,https://www.youtube.com/watch?v=...
-2023-06-15,Bennett Address,https://www.youtube.com/watch?v=...
+date,name,person,url
+2023-01-01,Netanyahu Speech,Benjamin Netanyahu,https://www.youtube.com/watch?v=...
+2023-06-15,Bennett Address,Naftali Bennett,https://www.youtube.com/watch?v=...
 EOF
 
 # 2. Run analysis
@@ -432,7 +435,7 @@ for pol in politicians['politicians']:
 **Cause**: CSV format is incorrect or URLs are invalid.
 
 **Solution**:
-- Verify CSV has headers: `date,name,url`
+- Verify CSV has headers: `date,name,person,url` (or minimum: `date,name,url`)
 - Check URLs are valid YouTube links
 - Use `--dry-run` to preview parsed videos
 

@@ -54,7 +54,7 @@ def init_database(db_path: str = DEFAULT_DB_PATH) -> None:
         CREATE TABLE IF NOT EXISTS videos (
             url TEXT PRIMARY KEY,
             date TEXT,
-            politician_name TEXT,
+            person_name TEXT,
             title TEXT,
             transcription TEXT,
             language TEXT,
@@ -68,8 +68,8 @@ def init_database(db_path: str = DEFAULT_DB_PATH) -> None:
 
     # Create indices for common queries
     cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_politician_name
-        ON videos(politician_name)
+        CREATE INDEX IF NOT EXISTS idx_person_name
+        ON videos(person_name)
     """)
 
     cursor.execute("""
@@ -117,7 +117,7 @@ def check_video_exists(url: str, db_path: str = DEFAULT_DB_PATH) -> bool:
 
 def save_video_analysis(
     url: str,
-    politician_name: str,
+    person_name: str,
     data: Dict[str, Any],
     date: Optional[str] = None,
     title: Optional[str] = None,
@@ -130,7 +130,7 @@ def save_video_analysis(
 
     Args:
         url: Video URL (primary key)
-        politician_name: Name of politician in the video
+        person_name: Name of person in the video
         data: Complete analysis results dictionary
         date: Video date (from CSV)
         title: Video title
@@ -162,7 +162,7 @@ def save_video_analysis(
         # Update existing record
         cursor.execute("""
             UPDATE videos
-            SET politician_name = ?,
+            SET person_name = ?,
                 title = ?,
                 transcription = ?,
                 language = ?,
@@ -173,7 +173,7 @@ def save_video_analysis(
                 date = COALESCE(?, date)
             WHERE url = ?
         """, (
-            politician_name,
+            person_name,
             title,
             transcription,
             language,
@@ -189,14 +189,14 @@ def save_video_analysis(
         # Insert new record
         cursor.execute("""
             INSERT INTO videos (
-                url, date, politician_name, title, transcription,
+                url, date, person_name, title, transcription,
                 language, analysis_json, created_at, updated_at,
                 status, error_message
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             url,
             date,
-            politician_name,
+            person_name,
             title,
             transcription,
             language,
@@ -226,7 +226,7 @@ def get_all_results(db_path: str = DEFAULT_DB_PATH) -> List[Dict[str, Any]]:
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT url, date, politician_name, title, transcription,
+        SELECT url, date, person_name, title, transcription,
                language, analysis_json, created_at, updated_at,
                status, error_message
         FROM videos
@@ -245,15 +245,15 @@ def get_all_results(db_path: str = DEFAULT_DB_PATH) -> List[Dict[str, Any]]:
     return results
 
 
-def get_videos_by_politician(
-    politician_name: str,
+def get_videos_by_person(
+    person_name: str,
     db_path: str = DEFAULT_DB_PATH
 ) -> List[Dict[str, Any]]:
     """
-    Get all videos for a specific politician.
+    Get all videos for a specific person.
 
     Args:
-        politician_name: Name of the politician
+        person_name: Name of the person
         db_path: Path to the database file
 
     Returns:
@@ -263,13 +263,13 @@ def get_videos_by_politician(
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT url, date, politician_name, title, transcription,
+        SELECT url, date, person_name, title, transcription,
                language, analysis_json, created_at, updated_at,
                status, error_message
         FROM videos
-        WHERE politician_name = ?
+        WHERE person_name = ?
         ORDER BY date DESC
-    """, (politician_name,))
+    """, (person_name,))
 
     results = []
     for row in cursor.fetchall():
@@ -282,15 +282,15 @@ def get_videos_by_politician(
     return results
 
 
-def get_politician_summary(
-    politician_name: str,
+def get_person_summary(
+    person_name: str,
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
     """
-    Get summary statistics for a politician.
+    Get summary statistics for a person.
 
     Args:
-        politician_name: Name of the politician
+        person_name: Name of the person
         db_path: Path to the database file
 
     Returns:
@@ -307,8 +307,8 @@ def get_politician_summary(
             SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) as completed,
             SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors
         FROM videos
-        WHERE politician_name = ?
-    """, (politician_name,))
+        WHERE person_name = ?
+    """, (person_name,))
 
     row = cursor.fetchone()
     conn.close()
@@ -338,7 +338,7 @@ def get_date_range_results(
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT url, date, politician_name, title, transcription,
+        SELECT url, date, person_name, title, transcription,
                language, analysis_json, created_at, updated_at,
                status, error_message
         FROM videos
@@ -371,7 +371,7 @@ def get_sentiment_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT politician_name, analysis_json, status
+        SELECT person_name, analysis_json, status
         FROM videos
         WHERE status = 'complete'
     """)
@@ -384,7 +384,7 @@ def get_sentiment_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
 
     for row in cursor.fetchall():
         stats["total_videos"] += 1
-        politician = row["politician_name"]
+        politician = row["person_name"]
 
         if politician not in stats["by_politician"]:
             stats["by_politician"][politician] = {

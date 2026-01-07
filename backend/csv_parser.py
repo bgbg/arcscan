@@ -35,22 +35,22 @@ def is_valid_youtube_url(url: str) -> bool:
         return False
 
 
-def extract_politician_name(title: str) -> str:
+def extract_person_name(title: str) -> str:
     """
-    Extract politician name from video title.
+    Extract person name from video title.
 
     The CSV format has titles like:
     - "נאום ראש הממשלה בנימין נתניהו..." (contains Netanyahu)
     - "נאום רה\"מ נפתלי בנט..." (contains Bennett)
 
-    This function attempts to extract the politician name.
+    This function attempts to extract the person name.
     For Hebrew/Arabic text, we look for common patterns.
 
     Args:
         title: Video title from CSV
 
     Returns:
-        Extracted politician name or "Unknown"
+        Extracted person name or "Unknown"
     """
     if not title:
         return "Unknown"
@@ -71,7 +71,7 @@ def extract_politician_name(title: str) -> str:
         if re.search(pattern, title_lower, re.IGNORECASE):
             return name
 
-    # If no known politician found, try to extract from "רה\"מ" or "ראש הממשלה" patterns
+    # If no known person found, try to extract from "רה\"מ" or "ראש הממשלה" patterns
     # These mean "Prime Minister" in Hebrew
     pm_match = re.search(r'(?:רה["\']מ|ראש הממשלה)\s+([א-ת\s]+?)(?:\s+ב(?:פני|עצרת|קונגרס)|$)', title)
     if pm_match:
@@ -80,7 +80,7 @@ def extract_politician_name(title: str) -> str:
             return name
 
     # Default to "Unknown" if we can't extract
-    logger.warning(f"Could not extract politician name from title: {title}")
+    logger.warning(f"Could not extract person name from title: {title}")
     return "Unknown"
 
 
@@ -89,14 +89,16 @@ def parse_csv(source: str, is_file_path: bool = True) -> List[Tuple[str, str, st
     Parse CSV data and extract video information.
 
     Expected CSV format:
-        date,name,url
+        date,person,name,url  (person is optional, will be extracted from name if missing)
+        OR
+        date,name,url  (legacy format, person extracted from name)
 
     Args:
         source: Either file path or CSV string data
         is_file_path: If True, source is a file path; if False, source is CSV string
 
     Returns:
-        List of tuples: (date, politician_name, url)
+        List of tuples: (date, person_name, url)
 
     Raises:
         ValueError: If CSV format is invalid
@@ -118,7 +120,7 @@ def parse_csv(source: str, is_file_path: bool = True) -> List[Tuple[str, str, st
         for row in rows:
             row_number += 1
 
-            # Validate required fields
+            # Validate required fields (date, name, url are mandatory)
             if 'date' not in row or 'name' not in row or 'url' not in row:
                 logger.warning(
                     f"Row {row_number}: Missing required fields (date, name, url). "
@@ -129,6 +131,14 @@ def parse_csv(source: str, is_file_path: bool = True) -> List[Tuple[str, str, st
             date = row['date'].strip()
             title = row['name'].strip()
             url = row['url'].strip()
+
+            # Get person name: prefer 'person' column, fallback to extraction from 'name'
+            if 'person' in row and row['person'].strip():
+                person_name = row['person'].strip()
+                logger.debug(f"Row {row_number}: Using explicit person name: {person_name}")
+            else:
+                person_name = extract_person_name(title)
+                logger.debug(f"Row {row_number}: Extracted person name from title: {person_name}")
 
             # Validate date format (YYYY-MM-DD)
             if not re.match(r'^\d{4}-\d{2}-\d{2}$', date):
@@ -156,15 +166,12 @@ def parse_csv(source: str, is_file_path: bool = True) -> List[Tuple[str, str, st
                 )
                 continue
 
-            # Extract politician name from title
-            politician_name = extract_politician_name(title)
-
-            videos.append((date, politician_name, url))
+            videos.append((date, person_name, url))
             seen_urls.add(url)
 
             logger.debug(
                 f"Row {row_number}: Parsed video - "
-                f"Date: {date}, Politician: {politician_name}, URL: {url[:50]}..."
+                f"Date: {date}, Person: {person_name}, URL: {url[:50]}..."
             )
 
     except FileNotFoundError:
