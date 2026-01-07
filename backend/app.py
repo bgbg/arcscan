@@ -391,21 +391,22 @@ def transcribe_audio(path):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Transcription error: {e}")
 
-# Process whisper response or subtitle text to extract sentences with timestamps
 def extract_sentences_with_timestamps(response_data):
-    """
-    Extract sentences from either Whisper response (with segments) or subtitle text.
-    Returns list of dicts with text, start_time, end_time.
-    """
+    """Extract sentences from Whisper output or subtitles, with best-effort timings."""
     sentences = []
-    
+
+    # Normalize response_data to dict if it's an object
+    if hasattr(response_data, 'model_dump'):
+        response_data = response_data.model_dump()
+    elif hasattr(response_data, '__dict__') and not isinstance(response_data, dict):
+        response_data = response_data.__dict__
+
     # Case 1: Whisper response with segments (has timestamps)
-    if "segments" in response_data and response_data["segments"]:
+    if isinstance(response_data, dict) and response_data.get("segments"):
         for segment in response_data["segments"]:
             text = segment.get("text", "").strip()
             start = segment.get("start", 0)
             end = segment.get("end", 0)
-            
             if text:
                 sentences.append({
                     "text": text,
@@ -414,17 +415,20 @@ def extract_sentences_with_timestamps(response_data):
                 })
     # Case 2: Subtitle text without segments (no timestamps)
     else:
-        text = response_data.get("text", "").strip()
+        text = ""
+        if isinstance(response_data, dict):
+            text = response_data.get("text", "")
+        elif isinstance(response_data, str):
+            text = response_data
+
+        text = text.strip()
         if text:
-            # Split text into sentences using simple heuristics (period, newline, etc.)
             import re
-            # Split on sentence boundaries
             sentence_texts = re.split(r'(?<=[.!?])\s+|[\n]+', text)
-            cumulative_time = 0
+            cumulative_time = 0.0
             for sentence_text in sentence_texts:
                 sentence_text = sentence_text.strip()
                 if sentence_text:
-                    # Estimate duration: 1 second per 25 chars (rough average reading speed)
                     duration = max(0.5, len(sentence_text) / 25.0)
                     sentences.append({
                         "text": sentence_text,
@@ -432,7 +436,7 @@ def extract_sentences_with_timestamps(response_data):
                         "end_time": cumulative_time + duration
                     })
                     cumulative_time += duration
-    
+
     return sentences
 
 # Analyze each sentence with EmoRoBERTa
@@ -527,7 +531,6 @@ def summarize_results(sentences):
     overall = max(counts, key=counts.get)
     return summary, overall
 
-# Main endpoint to analyze video
 @app.post("/analyze")
 async def analyze(req: AnalyzeRequest):
     # Check if analysis already exists
@@ -541,7 +544,7 @@ async def analyze(req: AnalyzeRequest):
 
     try:
         # 1. Download audio
-        update_progress(req.url, req.user_id, "downloading", 10, "Downloading audio from YouTube...")
+        update_progress(req.url, req.user_id, "downloading", 10, "Downloading audio...")
         audio_file = download_youtube_audio(req.url)
         update_progress(req.url, req.user_id, "downloaded", 20, "Audio downloaded successfully!")
         
@@ -580,6 +583,52 @@ async def analyze(req: AnalyzeRequest):
         update_progress(req.url, req.user_id, "transcribed", 50, "Speech successfully converted to text!")
         
         # 3. Analyze sentences
+        update_progress(req.url, req.user_id, "analyzing", 60, "Analyzing emotional content...")
+        analysis = analyze_sentences(sentences)
+        
+        # 4. Create timeline
+        update_progress(req.url, req.user_id, "creating_timeline", 80, "Building sentiment timeline...")
+        timeline_data = apply_smoothing(analysis)
+        
+        # 5. Summarize results
+        update_progress(req.url, req.user_id, "summarizing", 90, "Creating emotional summary...")
+        summary, overall = summarize_results(analysis)
+        
+        # Save complete analysis
+        if has_translation:
+            save_analysis(
+                req.user_id, req.url, whisper_response, analysis, summary, overall, timeline_data
+            )
+        else:
+            save_analysis(
+                req.user_id, req.url, text, analysis, summary, overall, timeline_data
+            )
+        
+        update_progress(req.url, req.user_id, "complete", 100, "Analysis complete!")
+        
+        # Clean up
+        os.remove(audio_file)
+
+        # Create response data
+        response_data = {
+            "user_id": req.user_id,
+            "video_url": req.url,
+            "transcription": text,
+            "sentences": analysis,
+            "summary": summary,
+            "overall_sentiment": overall,
+            "timeline_data": timeline_data,
+            "status": "complete"
+        }
+        
+        # Add translation info if available
+        if translation_info:
+            response_data.update(translation_info)
+            
+        return response_data
+    except Exception as e:
+        update_progress(req.url, req.user_id, "error", 0, f"Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
         update_progress(req.url, req.user_id, "analyzing", 60, "Analyzing emotional content...")
         analysis = analyze_sentences(sentences)
         
