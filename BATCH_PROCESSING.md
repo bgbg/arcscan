@@ -8,14 +8,14 @@ Batch processing allows you to analyze multiple YouTube videos from a CSV file, 
 
 - Analyzing large collections of political speeches
 - Building historical sentiment datasets
-- Comparing rhetoric across politicians or time periods
+- Comparing rhetoric across people or time periods
 - Automating regular analysis workflows
 
 ## Features
 
 - **Dual Interface**: Use either REST API endpoints or standalone CLI script
 - **SQLite Caching**: Avoid reprocessing videos with local database
-- **Politician Tracking**: Automatically extract and track politician names
+- **Person Tracking**: Automatically extract and track person names
 - **Resume Support**: Safely restart interrupted batch jobs
 - **Export Formats**: Export results to JSON or CSV
 - **Firebase Sync**: Optionally sync results to web app
@@ -37,8 +37,8 @@ date,name,person,url
 
 **Note**:
 - The `name` field contains the Hebrew title/description of the speech
-- The `person` field contains the politician's name in English (optional but recommended)
-- If `person` is provided, it will be used directly; otherwise the system will attempt to extract the politician name from the `name` field automatically
+- The `person` field contains the person's name in English (optional but recommended)
+- If `person` is provided, it will be used directly; otherwise the system will attempt to extract the person name from the `name` field automatically
 
 ### 2. Run Batch Analysis
 
@@ -57,8 +57,8 @@ python batch_analyze.py --input videos.csv --sync-firebase --user-id YOUR_USER_I
 # Preview without processing
 python batch_analyze.py --input videos.csv --dry-run
 
-# Filter by politician
-python batch_analyze.py --input videos.csv --politician "Benjamin Netanyahu"
+# Filter by person
+python batch_analyze.py --input videos.csv --person "Benjamin Netanyahu"
 
 # Generate report from existing results
 python batch_analyze.py --report
@@ -90,10 +90,10 @@ curl -X POST http://localhost:8000/batch/upload \
   -F "skip_existing=true"
 
 # Query results
-curl http://localhost:8000/batch/results?politician=Benjamin%20Netanyahu
+curl http://localhost:8000/batch/results?person=Benjamin%20Netanyahu
 
-# Get politician list
-curl http://localhost:8000/batch/politicians
+# Get people list
+curl http://localhost:8000/batch/people
 
 # Get statistics
 curl http://localhost:8000/batch/statistics
@@ -116,7 +116,7 @@ python batch_analyze.py [OPTIONS]
 | `--export-csv PATH` | Export results to CSV file |
 | `--sync-firebase` | Sync results to Firebase after processing |
 | `--user-id ID` | Firebase user ID (required with `--sync-firebase`) |
-| `--politician NAME` | Filter videos by politician name |
+| `--person NAME` | Filter videos by person name |
 | `--dry-run` | Preview videos without processing |
 | `--report` | Generate and print analysis report |
 | `--config PATH` | Path to configuration file (default: `batch_config.json`) |
@@ -169,7 +169,7 @@ Process batch of videos from CSV data.
   "errors": [
     {
       "url": "https://...",
-      "politician": "Name",
+      "person": "Name",
       "date": "2023-01-01",
       "error": "Download failed: ..."
     }
@@ -194,7 +194,7 @@ Upload CSV file for processing.
 Query analysis results.
 
 **Query Parameters**:
-- `politician`: Filter by politician name
+- `person`: Filter by person name
 - `start_date`: Filter by start date (YYYY-MM-DD)
 - `end_date`: Filter by end date (YYYY-MM-DD)
 - `status`: Filter by status (complete, error, pending)
@@ -207,7 +207,7 @@ Query analysis results.
     {
       "url": "https://...",
       "date": "2023-01-01",
-      "politician_name": "Name",
+      "person_name": "Name",
       "language": "he",
       "status": "complete",
       "analysis": { ... }
@@ -216,15 +216,15 @@ Query analysis results.
 }
 ```
 
-#### `GET /batch/politicians`
+#### `GET /batch/people`
 
-Get list of all politicians with statistics.
+Get list of all people with statistics.
 
 **Response**:
 ```json
 {
-  "total_politicians": 3,
-  "politicians": [
+  "total_people": 3,
+  "people": [
     {
       "name": "Benjamin Netanyahu",
       "video_count": 12,
@@ -259,7 +259,7 @@ Get overall sentiment statistics.
     "neutral": 7,
     "negative": 5
   },
-  "by_politician": { ... }
+  "by_person": { ... }
 }
 ```
 
@@ -273,7 +273,7 @@ The batch processor uses SQLite for local caching with a hybrid schema design:
 |--------|------|-------------|
 | `url` | TEXT (PK) | YouTube video URL |
 | `date` | TEXT | Video date (YYYY-MM-DD) |
-| `politician_name` | TEXT | Extracted politician name |
+| `person_name` | TEXT | Extracted person name |
 | `title` | TEXT | Video title |
 | `transcription` | TEXT | Full transcription text |
 | `language` | TEXT | Detected language code |
@@ -285,7 +285,7 @@ The batch processor uses SQLite for local caching with a hybrid schema design:
 
 ### Indices
 
-- `idx_politician_name` on `politician_name`
+- `idx_person_name` on `person_name`
 - `idx_date` on `date`
 - `idx_status` on `status`
 
@@ -296,15 +296,15 @@ The batch processor uses SQLite for local caching with a hybrid schema design:
 sqlite3 batch_results.db
 
 # Get all complete analyses
-SELECT politician_name, date, url, language
+SELECT person_name, date, url, language
 FROM videos
 WHERE status = 'complete'
 ORDER BY date DESC;
 
-# Get politician video counts
-SELECT politician_name, COUNT(*) as count
+# Get person video counts
+SELECT person_name, COUNT(*) as count
 FROM videos
-GROUP BY politician_name
+GROUP BY person_name
 ORDER BY count DESC;
 
 # Get videos in date range
@@ -316,12 +316,12 @@ WHERE date BETWEEN '2020-01-01' AND '2023-12-31';
 
 ### JSON Export
 
-Grouped by politician with summary statistics:
+Grouped by person with summary statistics:
 
 ```json
 {
   "total_videos": 10,
-  "politicians": {
+  "people": {
     "Benjamin Netanyahu": [
       {
         "url": "https://...",
@@ -343,13 +343,13 @@ Grouped by politician with summary statistics:
 Enhanced format with sentiment columns:
 
 ```csv
-date,politician,url,language,overall_sentiment,status,created_at
+date,person,url,language,overall_sentiment,status,created_at
 2023-01-01,Benjamin Netanyahu,https://...,he,Neutral,complete,2024-01-01T12:00:00
 ```
 
-## Politician Name Extraction
+## Person Name Extraction
 
-The system automatically extracts politician names from video titles using pattern matching:
+The system automatically extracts person names from video titles using pattern matching:
 
 **Supported Patterns**:
 - Hebrew names: נתניהו → Benjamin Netanyahu
@@ -359,7 +359,7 @@ The system automatically extracts politician names from video titles using patte
 
 If no known pattern matches, the name is set to "Unknown" and logged.
 
-**Custom Politicians**: To add support for additional politicians, edit the `patterns` list in [`backend/csv_parser.py:extract_politician_name()`](backend/csv_parser.py).
+**Adding People**: To add support for additional people, edit the `patterns` list in [`backend/csv_parser.py:extract_person_name()`](backend/csv_parser.py).
 
 ## Workflow Examples
 
@@ -393,17 +393,17 @@ python batch_analyze.py --input batch2.csv --skip-existing
 python batch_analyze.py --report
 ```
 
-### Example 3: Analysis by Politician
+### Example 3: Analysis by Person
 
 ```bash
 # Process all videos
 python batch_analyze.py --input all_videos.csv
 
 # Export Netanyahu speeches only
-python batch_analyze.py --export-csv netanyahu.csv --politician "Benjamin Netanyahu"
+python batch_analyze.py --export-csv netanyahu.csv --person "Benjamin Netanyahu"
 
 # Export Bennett speeches only
-python batch_analyze.py --export-json bennett.json --politician "Naftali Bennett"
+python batch_analyze.py --export-json bennett.json --person "Naftali Bennett"
 ```
 
 ### Example 4: API Integration
@@ -421,10 +421,10 @@ results = response.json()
 print(f"Processed: {results['successful']} successful, {results['failed']} failed")
 
 # Query results
-response = requests.get('http://localhost:8000/batch/politicians')
-politicians = response.json()
+response = requests.get('http://localhost:8000/batch/people')
+people = response.json()
 
-for pol in politicians['politicians']:
+for pol in people['people']:
     print(f"{pol['name']}: {pol['video_count']} videos")
 ```
 
@@ -457,14 +457,14 @@ for pol in politicians['politicians']:
 - Use `--skip-existing=false` to reprocess
 - Delete database to start fresh: `rm batch_results.db`
 
-### Issue: Politician name not extracted
+### Issue: Person name not extracted
 
 **Cause**: Video title doesn't match known patterns.
 
 **Solution**:
-- Check logs for "Could not extract politician name" warnings
+- Check logs for "Could not extract person name" warnings
 - Add custom pattern to [`backend/csv_parser.py`](backend/csv_parser.py)
-- Manually edit database: `UPDATE videos SET politician_name = 'Name' WHERE url = '...';`
+- Manually edit database: `UPDATE videos SET person_name = 'Name' WHERE url = '...';`
 
 ### Issue: Firebase sync fails
 
@@ -494,7 +494,7 @@ for pol in politicians['politicians']:
 
 ## Next Steps
 
-- **Extend politician patterns**: Edit [`backend/csv_parser.py`](backend/csv_parser.py) to add more names
+- **Extend person patterns**: Edit [`backend/csv_parser.py`](backend/csv_parser.py) to add more names
 - **Schedule regular runs**: Use cron or Task Scheduler with CLI script
 - **Build reporting dashboard**: Query SQLite database for custom analyses
 - **Integrate with web app**: Use Firebase sync to view results in dashboard

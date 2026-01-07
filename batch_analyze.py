@@ -30,7 +30,7 @@ from batch_processor import process_video_batch, sync_to_firebase
 from batch_db import (
     DEFAULT_DB_PATH,
     get_all_results,
-    get_videos_by_politician,
+    get_videos_by_person,
     generate_text_report,
     init_database
 )
@@ -62,30 +62,30 @@ def load_config(config_path: str = "batch_config.json") -> dict:
         return {}
 
 
-def export_to_json(output_path: str, politician: Optional[str] = None, db_path: str = DEFAULT_DB_PATH):
+def export_to_json(output_path: str, person: Optional[str] = None, db_path: str = DEFAULT_DB_PATH):
     """
     Export results to JSON format.
 
     Args:
         output_path: Path to output JSON file
-        politician: Optional filter by politician name
+        person: Optional filter by person name
         db_path: Path to SQLite database
     """
     logger.info(f"Exporting results to JSON: {output_path}")
 
-    if politician:
-        results = get_videos_by_politician(politician, db_path)
+    if person:
+        results = get_videos_by_person(person, db_path)
     else:
         results = get_all_results(db_path)
 
-    # Group by politician
+    # Group by person
     grouped = {}
     for result in results:
-        pol = result.get("politician_name", "Unknown")
-        if pol not in grouped:
-            grouped[pol] = []
+        person_name = result.get("person_name", "Unknown")
+        if person_name not in grouped:
+            grouped[person_name] = []
 
-        grouped[pol].append({
+        grouped[person_name].append({
             "url": result["url"],
             "date": result["date"],
             "title": result.get("title"),
@@ -97,7 +97,7 @@ def export_to_json(output_path: str, politician: Optional[str] = None, db_path: 
 
     output = {
         "total_videos": len(results),
-        "politicians": grouped,
+        "people": grouped,
         "generated_at": results[0]["created_at"] if results else None
     }
 
@@ -107,21 +107,21 @@ def export_to_json(output_path: str, politician: Optional[str] = None, db_path: 
     logger.info(f"Exported {len(results)} results to {output_path}")
 
 
-def export_to_csv(output_path: str, politician: Optional[str] = None, db_path: str = DEFAULT_DB_PATH):
+def export_to_csv(output_path: str, person: Optional[str] = None, db_path: str = DEFAULT_DB_PATH):
     """
     Export results to enhanced CSV format.
 
     Args:
         output_path: Path to output CSV file
-        politician: Optional filter by politician name
+        person: Optional filter by person name
         db_path: Path to SQLite database
     """
     import csv
 
     logger.info(f"Exporting results to CSV: {output_path}")
 
-    if politician:
-        results = get_videos_by_politician(politician, db_path)
+    if person:
+        results = get_videos_by_person(person, db_path)
     else:
         results = get_all_results(db_path)
 
@@ -130,7 +130,7 @@ def export_to_csv(output_path: str, politician: Optional[str] = None, db_path: s
 
         # Write header
         writer.writerow([
-            'date', 'politician', 'url', 'language',
+            'date', 'person', 'url', 'language',
             'overall_sentiment', 'status', 'created_at'
         ])
 
@@ -139,7 +139,7 @@ def export_to_csv(output_path: str, politician: Optional[str] = None, db_path: s
             analysis = result.get("analysis", {})
             writer.writerow([
                 result.get("date", ""),
-                result.get("politician_name", "Unknown"),
+                result.get("person_name", "Unknown"),
                 result["url"],
                 result.get("language", ""),
                 analysis.get("overall_sentiment", "") if analysis else "",
@@ -199,9 +199,16 @@ def main():
     )
 
     parser.add_argument(
-        '--politician',
+        '--person',
         type=str,
-        help='Filter by politician name (for processing or export)'
+        help='Filter by person name (for processing or export)'
+    )
+
+    parser.add_argument(
+        '--limit',
+        type=int,
+        metavar='N',
+        help='Only process first N videos (useful for testing)'
     )
 
     parser.add_argument(
@@ -259,7 +266,10 @@ def main():
 
     # Handle report mode
     if args.report:
+        # Ensure database schema exists even if no prior processing
+        init_database(db_path)
         logger.info("Generating analysis report...")
+        logger.debug(f"Using database at: {os.path.abspath(db_path)}")
         report = generate_text_report(db_path)
         print("\n" + report)
         return 0
@@ -267,9 +277,9 @@ def main():
     # Handle export-only mode
     if args.export_json or args.export_csv:
         if args.export_json:
-            export_to_json(args.export_json, args.politician, db_path)
+            export_to_json(args.export_json, args.person, db_path)
         if args.export_csv:
-            export_to_csv(args.export_csv, args.politician, db_path)
+            export_to_csv(args.export_csv, args.person, db_path)
         return 0
 
     # Processing mode requires input file
@@ -297,10 +307,15 @@ def main():
 
     logger.info(f"Found {len(videos)} videos to process")
 
-    # Filter by politician if specified
-    if args.politician:
-        videos = [(d, p, u) for d, p, u in videos if p == args.politician]
-        logger.info(f"Filtered to {len(videos)} videos for politician: {args.politician}")
+    # Filter by person if specified
+    if args.person:
+        videos = [(d, p, u) for d, p, u in videos if p == args.person]
+        logger.info(f"Filtered to {len(videos)} videos for person: {args.person}")
+
+    # Apply limit if specified
+    if args.limit and args.limit > 0:
+        videos = videos[:args.limit]
+        logger.info(f"Limited to first {len(videos)} videos")
 
     if not videos:
         logger.warning("No videos to process after filtering")
@@ -310,8 +325,8 @@ def main():
     if args.dry_run:
         logger.info("DRY RUN - No processing will occur")
         print("\nVideos to be processed:")
-        for idx, (date, politician, url) in enumerate(videos, 1):
-            print(f"  {idx}. [{date}] {politician} - {url[:60]}...")
+        for idx, (date, person, url) in enumerate(videos, 1):
+            print(f"  {idx}. [{date}] {person} - {url[:60]}...")
         return 0
 
     # Initialize database
@@ -335,10 +350,10 @@ def main():
 
     # Export if requested
     if args.export_json:
-        export_to_json(args.export_json, args.politician, db_path)
+        export_to_json(args.export_json, args.person, db_path)
 
     if args.export_csv:
-        export_to_csv(args.export_csv, args.politician, db_path)
+        export_to_csv(args.export_csv, args.person, db_path)
 
     # Sync to Firebase if requested
     if args.sync_firebase:

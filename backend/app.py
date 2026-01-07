@@ -10,8 +10,17 @@ import os
 import yt_dlp
 import uuid
 import re
-import firebase_admin
-from firebase_admin import credentials, firestore
+"""
+Firebase imports are optional. In non-Firebase environments (CLI batch processing),
+we avoid hard failures if the package isn't installed.
+"""
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+except Exception:
+    firebase_admin = None
+    credentials = None
+    firestore = None
 #from textblob import TextBlob
 from collections import Counter
 from transformers import pipeline as transformers_pipeline
@@ -24,10 +33,17 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Initialize Firebase
-cred = credentials.Certificate("firebase_credentials.json")
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+# Initialize Firebase (optional - only needed for web API, not batch processing)
+db = None
+try:
+    if firebase_admin and credentials and firestore and os.path.exists("firebase_credentials.json"):
+        cred = credentials.Certificate("firebase_credentials.json")
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+    else:
+        print("Warning: Firebase not configured or credentials missing. Firebase features disabled.")
+except Exception as e:
+    print(f"Warning: Firebase initialization failed: {e}. Firebase features disabled.")
 
 # Initialize the translator
 #translator = Translator()
@@ -146,6 +162,129 @@ def download_youtube_audio(youtube_url, output_dir="downloads"):
         return output_path + ".mp3"
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Download error: {e}")
+
+
+def download_youtube_subtitles(youtube_url, output_dir="downloads"):
+    """
+    Try to download YouTube subtitles if available.
+    Returns subtitle data dict with text and segments, or None if no subtitles.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    unique_id = str(uuid.uuid4())
+
+    ydl_opts = {
+        'writesubtitles': True,
+        'writeautomaticsub': True,  # Also try auto-generated captions
+        'subtitleslangs': ['en', 'he', 'ar'],  # Prefer these languages
+        'skip_download': True,  # Don't download video
+        'subtitlesformat': 'vtt/best',
+        'outtmpl': os.path.join(output_dir, f'subtitle_{unique_id}'),
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Get video info to check for subtitles
+            info = ydl.extract_info(youtube_url, download=False)
+
+            # Check if subtitles are available
+            subtitles = info.get('subtitles', {})
+            automatic_captions = info.get('automatic_captions', {})
+
+            # Prefer manual subtitles over automatic
+            available_subs = subtitles if subtitles else automatic_captions
+
+            if not available_subs:
+                return None
+
+            # Try to find subtitles in order of preference
+            preferred_langs = ['en', 'he', 'ar']
+            selected_lang = None
+
+            for lang in preferred_langs:
+                if lang in available_subs:
+                    selected_lang = lang
+                    break
+
+            # If no preferred language, take the first available
+            if not selected_lang and available_subs:
+                selected_lang = list(available_subs.keys())[0]
+
+            if not selected_lang:
+                return None
+
+            # Download the subtitle
+            ydl_opts['subtitleslangs'] = [selected_lang]
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
+                ydl_download.download([youtube_url])
+
+            # Find the downloaded subtitle file
+            subtitle_file = None
+            for ext in ['.vtt', '.srt']:
+                potential_file = os.path.join(output_dir, f'subtitle_{unique_id}.{selected_lang}{ext}')
+                if os.path.exists(potential_file):
+                    subtitle_file = potential_file
+                    break
+
+            if not subtitle_file or not os.path.exists(subtitle_file):
+                return None
+
+            # Parse the subtitle file
+            with open(subtitle_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Clean up subtitle file
+            os.remove(subtitle_file)
+
+            # Parse VTT/SRT format to extract text and timestamps
+            import re
+
+            # Remove VTT header
+            content = re.sub(r'^WEBVTT\n\n', '', content)
+            content = re.sub(r'^NOTE.*?\n\n', '', content, flags=re.MULTILINE)
+
+            # Extract segments with timestamps
+            segments = []
+            full_text = []
+
+            # Pattern for VTT timestamps: 00:00:00.000 --> 00:00:05.000
+            pattern = r'(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})\n(.+?)(?=\n\n|\Z)'
+            matches = re.findall(pattern, content, re.DOTALL)
+
+            for start_time, end_time, text in matches:
+                # Convert timestamp to seconds
+                def timestamp_to_seconds(ts):
+                    h, m, s = ts.split(':')
+                    s, ms = s.split('.')
+                    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+
+                # Clean text (remove HTML tags, extra whitespace)
+                clean_text = re.sub(r'<[^>]+>', '', text)
+                clean_text = re.sub(r'\n', ' ', clean_text)
+                clean_text = clean_text.strip()
+
+                if clean_text:
+                    segments.append({
+                        'start': timestamp_to_seconds(start_time),
+                        'end': timestamp_to_seconds(end_time),
+                        'text': clean_text
+                    })
+                    full_text.append(clean_text)
+
+            if not segments:
+                return None
+
+            return {
+                'text': ' '.join(full_text),
+                'segments': segments,
+                'language': selected_lang,
+                'source': 'youtube_subtitles'
+            }
+
+    except Exception as e:
+        # If subtitle download fails, return None to fall back to Whisper
+        print(f"Subtitle download failed: {e}")
+        return None
+
 
 # Transcribe audio to text using Whisper
 # A more optimized version that reduces API calls by batching segments
@@ -754,17 +893,29 @@ async def get_advanced_results(video_url: str):
 # BATCH PROCESSING ENDPOINTS
 # ============================================================================
 
-# Import batch processing modules
-from .csv_parser import parse_csv, validate_csv_format
-from .batch_processor import process_video_batch, sync_to_firebase
-from .batch_db import (
-    get_all_results,
-    get_videos_by_politician,
-    get_politician_summary,
-    get_date_range_results,
-    get_sentiment_statistics,
-    DEFAULT_DB_PATH
-)
+# Import batch processing modules with flexible paths (support CLI context)
+try:
+    from .csv_parser import parse_csv, validate_csv_format
+    from .batch_processor import process_video_batch, sync_to_firebase
+    from .batch_db import (
+        get_all_results,
+        get_videos_by_person,
+        get_person_summary,
+        get_date_range_results,
+        get_sentiment_statistics,
+        DEFAULT_DB_PATH
+    )
+except ImportError:
+    from csv_parser import parse_csv, validate_csv_format
+    from batch_processor import process_video_batch, sync_to_firebase
+    from batch_db import (
+        get_all_results,
+        get_videos_by_person,
+        get_person_summary,
+        get_date_range_results,
+        get_sentiment_statistics,
+        DEFAULT_DB_PATH
+    )
 
 
 class BatchAnalyzeRequest(BaseModel):
@@ -852,7 +1003,7 @@ async def batch_upload(
 
 @app.get("/batch/results")
 async def get_batch_results(
-    politician: Optional[str] = None,
+    person: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     status: Optional[str] = None
@@ -861,7 +1012,7 @@ async def get_batch_results(
     Query batch analysis results from SQLite.
 
     Args:
-        politician: Filter by politician name
+        person: Filter by person name
         start_date: Filter by start date (YYYY-MM-DD)
         end_date: Filter by end date (YYYY-MM-DD)
         status: Filter by status (complete, error, pending)
@@ -870,8 +1021,8 @@ async def get_batch_results(
         List of analysis results
     """
     # Apply filters
-    if politician:
-        results = get_videos_by_politician(politician, DEFAULT_DB_PATH)
+    if person:
+        results = get_videos_by_person(person, DEFAULT_DB_PATH)
     elif start_date and end_date:
         results = get_date_range_results(start_date, end_date, DEFAULT_DB_PATH)
     else:
@@ -887,20 +1038,20 @@ async def get_batch_results(
     }
 
 
-@app.get("/batch/politicians")
-async def get_politicians():
+@app.get("/batch/people")
+async def get_people():
     """
-    Get list of all politicians with their video counts.
+    Get list of all people with their video counts.
 
     Returns:
-        List of politicians with statistics
+        List of people with statistics
     """
     stats = get_sentiment_statistics(DEFAULT_DB_PATH)
 
-    politicians = []
-    for name, data in stats.get("by_politician", {}).items():
-        summary = get_politician_summary(name, DEFAULT_DB_PATH)
-        politicians.append({
+    people = []
+    for name, data in stats.get("by_person", {}).items():
+        summary = get_person_summary(name, DEFAULT_DB_PATH)
+        people.append({
             "name": name,
             "video_count": data["count"],
             "sentiment_distribution": data["sentiment"],
@@ -915,8 +1066,8 @@ async def get_politicians():
         })
 
     return {
-        "total_politicians": len(politicians),
-        "politicians": sorted(politicians, key=lambda x: x["video_count"], reverse=True)
+        "total_people": len(people),
+        "people": sorted(people, key=lambda x: x["video_count"], reverse=True)
     }
 
 

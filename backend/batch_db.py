@@ -16,8 +16,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Default database path (relative to backend directory)
-DEFAULT_DB_PATH = "batch_results.db"
+# Default database path anchored to backend directory
+DEFAULT_DB_PATH = str(Path(__file__).parent / "batch_results.db")
 
 
 def get_db_connection(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -378,21 +378,21 @@ def get_sentiment_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
 
     stats = {
         "total_videos": 0,
-        "by_politician": {},
+        "by_person": {},
         "overall_sentiment": {"positive": 0, "neutral": 0, "negative": 0}
     }
 
     for row in cursor.fetchall():
         stats["total_videos"] += 1
-        politician = row["person_name"]
+        person = row["person_name"]
 
-        if politician not in stats["by_politician"]:
-            stats["by_politician"][politician] = {
+        if person not in stats["by_person"]:
+            stats["by_person"][person] = {
                 "count": 0,
                 "sentiment": {"positive": 0, "neutral": 0, "negative": 0}
             }
 
-        stats["by_politician"][politician]["count"] += 1
+        stats["by_person"][person]["count"] += 1
 
         # Parse analysis JSON and extract sentiment
         if row["analysis_json"]:
@@ -402,7 +402,7 @@ def get_sentiment_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
 
                 if overall_sentiment in ["positive", "neutral", "negative"]:
                     stats["overall_sentiment"][overall_sentiment] += 1
-                    stats["by_politician"][politician]["sentiment"][overall_sentiment] += 1
+                    stats["by_person"][person]["sentiment"][overall_sentiment] += 1
             except (json.JSONDecodeError, KeyError) as e:
                 logger.warning(f"Error parsing analysis JSON: {e}")
 
@@ -432,9 +432,9 @@ def generate_text_report(db_path: str = DEFAULT_DB_PATH) -> str:
             percentage = (count / total) * 100
             report += f"- **{sentiment.capitalize()}**: {count} ({percentage:.1f}%)\n"
 
-    report += "\n## By Politician\n\n"
-    for politician, data in sorted(stats['by_politician'].items()):
-        report += f"### {politician}\n\n"
+    report += "\n## By Person\n\n"
+    for person, data in sorted(stats['by_person'].items()):
+        report += f"### {person}\n\n"
         report += f"**Videos**: {data['count']}\n\n"
         report += "**Sentiment**:\n"
         for sentiment, count in data['sentiment'].items():

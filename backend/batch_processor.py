@@ -35,6 +35,7 @@ def _import_app_functions():
     try:
         from .app import (
             download_youtube_audio,
+            download_youtube_subtitles,
             transcribe_audio,
             extract_sentences_with_timestamps,
             analyze_sentences,
@@ -46,6 +47,7 @@ def _import_app_functions():
     except ImportError:
         from app import (
             download_youtube_audio,
+            download_youtube_subtitles,
             transcribe_audio,
             extract_sentences_with_timestamps,
             analyze_sentences,
@@ -57,6 +59,7 @@ def _import_app_functions():
 
     return {
         'download_youtube_audio': download_youtube_audio,
+        'download_youtube_subtitles': download_youtube_subtitles,
         'transcribe_audio': transcribe_audio,
         'extract_sentences_with_timestamps': extract_sentences_with_timestamps,
         'analyze_sentences': analyze_sentences,
@@ -100,7 +103,7 @@ class BatchProcessingResult:
 
 def process_single_video(
     url: str,
-    politician_name: str,
+    person_name: str,
     date: str,
     db_path: str = DEFAULT_DB_PATH
 ) -> Tuple[bool, Optional[str]]:
@@ -109,7 +112,7 @@ def process_single_video(
 
     Args:
         url: YouTube video URL
-        politician_name: Name of politician in video
+        person_name: Name of person in video
         date: Video date
         db_path: Path to SQLite database
 
@@ -119,6 +122,7 @@ def process_single_video(
     # Lazy load app functions
     funcs = _import_app_functions()
     download_youtube_audio = funcs['download_youtube_audio']
+    download_youtube_subtitles = funcs['download_youtube_subtitles']
     transcribe_audio = funcs['transcribe_audio']
     extract_sentences_with_timestamps = funcs['extract_sentences_with_timestamps']
     analyze_sentences = funcs['analyze_sentences']
@@ -128,26 +132,35 @@ def process_single_video(
     try:
         logger.info(f"Processing video: {url}")
 
-        # 1. Download audio
-        logger.debug("Downloading audio...")
-        try:
-            audio_file = download_youtube_audio(url)
-        except Exception as e:
-            # Handle both HTTPException and regular exceptions
-            error_detail = getattr(e, 'detail', str(e))
-            raise Exception(f"Download failed: {error_detail}")
+        # 1. Try to download subtitles first (free!)
+        logger.debug("Attempting to download subtitles...")
+        whisper_response = download_youtube_subtitles(url)
+        audio_file = None
 
-        # 2. Transcribe audio (with translation if Hebrew/Arabic)
-        logger.debug("Transcribing audio...")
-        try:
-            whisper_response = transcribe_audio(audio_file)
-        except Exception as e:
-            error_detail = getattr(e, 'detail', str(e))
-            raise Exception(f"Transcription failed: {error_detail}")
-        finally:
-            # Clean up audio file
-            if os.path.exists(audio_file):
-                os.remove(audio_file)
+        if whisper_response:
+            logger.info(f"✓ Found subtitles! Skipping audio transcription (saved API cost)")
+        else:
+            # 2. No subtitles available, download audio and transcribe
+            logger.info("No subtitles found, will use Whisper transcription")
+            logger.debug("Downloading audio...")
+            try:
+                audio_file = download_youtube_audio(url)
+            except Exception as e:
+                # Handle both HTTPException and regular exceptions
+                error_detail = getattr(e, 'detail', str(e))
+                raise Exception(f"Download failed: {error_detail}")
+
+            # 3. Transcribe audio (with translation if Hebrew/Arabic)
+            logger.debug("Transcribing audio with Whisper API...")
+            try:
+                whisper_response = transcribe_audio(audio_file)
+            except Exception as e:
+                error_detail = getattr(e, 'detail', str(e))
+                raise Exception(f"Transcription failed: {error_detail}")
+            finally:
+                # Clean up audio file
+                if audio_file and os.path.exists(audio_file):
+                    os.remove(audio_file)
 
         # Get the transcribed text
         text = whisper_response.get("text", "")
@@ -190,7 +203,7 @@ def process_single_video(
 
         save_video_analysis(
             url=url,
-            politician_name=politician_name,
+            person_name=person_name,
             data=result_data,
             date=date,
             title=None,  # We could extract from YouTube metadata if needed
@@ -209,7 +222,7 @@ def process_single_video(
         try:
             save_video_analysis(
                 url=url,
-                politician_name=politician_name,
+                person_name=person_name,
                 data={},
                 date=date,
                 status="error",
@@ -232,7 +245,7 @@ def process_video_batch(
     Process a batch of videos.
 
     Args:
-        videos: List of tuples (date, politician_name, url)
+        videos: List of tuples (date, person_name, url)
         progress_callback: Optional callback function(current, total, message)
         db_path: Path to SQLite database
         skip_existing: If True, skip videos that already exist in database
@@ -248,12 +261,12 @@ def process_video_batch(
 
     logger.info(f"Starting batch processing of {result.total} videos")
 
-    for idx, (date, politician_name, url) in enumerate(videos, 1):
+    for idx, (date, person_name, url) in enumerate(videos, 1):
         # Report progress
         if progress_callback:
-            progress_callback(idx, result.total, f"Processing: {politician_name}")
+            progress_callback(idx, result.total, f"Processing: {person_name}")
 
-        logger.info(f"[{idx}/{result.total}] Processing: {politician_name} - {date}")
+        logger.info(f"[{idx}/{result.total}] Processing: {person_name} - {date}")
 
         # Check if video already processed
         if skip_existing and check_video_exists(url, db_path):
@@ -262,7 +275,7 @@ def process_video_batch(
             continue
 
         # Process the video
-        success, error = process_single_video(url, politician_name, date, db_path)
+        success, error = process_single_video(url, person_name, date, db_path)
 
         if success:
             result.successful += 1
@@ -270,7 +283,7 @@ def process_video_batch(
             result.failed += 1
             result.errors.append({
                 "url": url,
-                "politician": politician_name,
+                "person": person_name,
                 "date": date,
                 "error": error
             })
@@ -326,7 +339,7 @@ def sync_to_firebase(
         conn = get_db_connection(db_path)
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT url, politician_name, analysis_json, status
+            SELECT url, person_name, analysis_json, status
             FROM videos
             WHERE url IN ({}) AND status = 'complete'
         """.format(','.join('?' * len(video_urls))), video_urls)
@@ -351,8 +364,8 @@ def sync_to_firebase(
             overall = analysis.get("overall_sentiment", "")
             timeline = analysis.get("timeline_data", [])
 
-            # Add politician metadata
-            analysis["politician_name"] = video["politician_name"]
+            # Add person metadata
+            analysis["person_name"] = video["person_name"]
 
             # Call existing Firebase save function
             firebase_save_analysis(
