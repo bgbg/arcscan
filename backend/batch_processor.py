@@ -36,6 +36,7 @@ def _import_app_functions():
         from .app import (
             download_youtube_audio,
             download_youtube_subtitles,
+            validate_and_process_subtitles,
             transcribe_audio,
             extract_sentences_with_timestamps,
             analyze_sentences,
@@ -48,6 +49,7 @@ def _import_app_functions():
         from app import (
             download_youtube_audio,
             download_youtube_subtitles,
+            validate_and_process_subtitles,
             transcribe_audio,
             extract_sentences_with_timestamps,
             analyze_sentences,
@@ -60,6 +62,7 @@ def _import_app_functions():
     return {
         'download_youtube_audio': download_youtube_audio,
         'download_youtube_subtitles': download_youtube_subtitles,
+        'validate_and_process_subtitles': validate_and_process_subtitles,
         'transcribe_audio': transcribe_audio,
         'extract_sentences_with_timestamps': extract_sentences_with_timestamps,
         'analyze_sentences': analyze_sentences,
@@ -123,6 +126,7 @@ def process_single_video(
     funcs = _import_app_functions()
     download_youtube_audio = funcs['download_youtube_audio']
     download_youtube_subtitles = funcs['download_youtube_subtitles']
+    validate_and_process_subtitles = funcs['validate_and_process_subtitles']
     transcribe_audio = funcs['transcribe_audio']
     extract_sentences_with_timestamps = funcs['extract_sentences_with_timestamps']
     analyze_sentences = funcs['analyze_sentences']
@@ -132,33 +136,68 @@ def process_single_video(
     try:
         logger.info(f"Processing video: {url}")
 
-        # 1. Try to download subtitles first (free!)
-        logger.debug("Attempting to download subtitles...")
-        whisper_response = download_youtube_subtitles(url)
+        whisper_response = None
+        decision_log = []
         audio_file = None
 
-        if whisper_response:
-            logger.info(f"✓ Found subtitles! Skipping audio transcription (saved API cost)")
-        else:
-            # 2. No subtitles available, download audio and transcribe
-            logger.info("No subtitles found, will use Whisper transcription")
+        # 1. Try to download and validate subtitles first (preferred: free, faster)
+        logger.debug("Attempting to download subtitles...")
+        raw_subtitles = download_youtube_subtitles(url)
+        
+        if raw_subtitles:
+            subtitle_data = validate_and_process_subtitles(raw_subtitles)
+            if subtitle_data:
+                detected_lang = subtitle_data.get('detected_language', 'unknown')
+                logger.info(f"✓ Found and validated subtitles (detected lang: {detected_lang})")
+                decision_log.append(f"subtitle_{detected_lang}")
+                
+                # Translate to English if non-English
+                if detected_lang not in ['en', 'unknown']:
+                    logger.info(f"Translating subtitles from {detected_lang} to English...")
+                    try:
+                        from openai import OpenAI
+                        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                        
+                        translation_response = client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=[
+                                {"role": "system", "content": "Translate to English. Output only translated text."},
+                                {"role": "user", "content": subtitle_data['text']}
+                            ],
+                            temperature=0.3
+                        )
+                        translated = translation_response.choices[0].message.content.strip()
+                        subtitle_data['original_text'] = subtitle_data['text']
+                        subtitle_data['translated_text'] = translated
+                        subtitle_data['text'] = translated
+                        decision_log.append("translated")
+                        logger.info("✓ Subtitle translation complete")
+                    except Exception as e:
+                        logger.warning(f"Subtitle translation failed: {e}. Falling back to Whisper.")
+                        subtitle_data = None
+                
+                if subtitle_data:
+                    whisper_response = subtitle_data
+        
+        # 2. Fallback to Whisper if no valid subtitles
+        if not whisper_response:
+            logger.info("No valid subtitles; using Whisper transcription")
             logger.debug("Downloading audio...")
             try:
                 audio_file = download_youtube_audio(url)
             except Exception as e:
-                # Handle both HTTPException and regular exceptions
                 error_detail = getattr(e, 'detail', str(e))
                 raise Exception(f"Download failed: {error_detail}")
 
-            # 3. Transcribe audio (with translation if Hebrew/Arabic)
             logger.debug("Transcribing audio with Whisper API...")
             try:
                 whisper_response = transcribe_audio(audio_file)
+                decision_log.append("whisper")
+                logger.info(f"✓ Whisper transcription complete (detected lang: {whisper_response.get('detected_language')})")
             except Exception as e:
                 error_detail = getattr(e, 'detail', str(e))
                 raise Exception(f"Transcription failed: {error_detail}")
             finally:
-                # Clean up audio file
                 if audio_file and os.path.exists(audio_file):
                     os.remove(audio_file)
 
