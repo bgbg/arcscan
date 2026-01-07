@@ -12,29 +12,59 @@ from typing import List, Tuple, Dict, Any, Optional, Callable
 from datetime import datetime
 
 # Import database functions
-from .batch_db import (
-    init_database,
-    check_video_exists,
-    save_video_analysis,
-    DEFAULT_DB_PATH
-)
-
-# Import analysis functions from main app
-# We'll handle HTTPException by catching them
-from .app import (
-    download_youtube_audio,
-    transcribe_audio,
-    extract_sentences_with_timestamps,
-    analyze_sentences,
-    apply_smoothing,
-    summarize_results,
-    save_analysis as firebase_save_analysis,
-    db as firebase_db
-)
-
-from fastapi import HTTPException
+try:
+    from .batch_db import (
+        init_database,
+        check_video_exists,
+        save_video_analysis,
+        DEFAULT_DB_PATH
+    )
+except ImportError:
+    from batch_db import (
+        init_database,
+        check_video_exists,
+        save_video_analysis,
+        DEFAULT_DB_PATH
+    )
 
 logger = logging.getLogger(__name__)
+
+
+def _import_app_functions():
+    """Lazy import of app functions to avoid circular dependencies."""
+    try:
+        from .app import (
+            download_youtube_audio,
+            transcribe_audio,
+            extract_sentences_with_timestamps,
+            analyze_sentences,
+            apply_smoothing,
+            summarize_results,
+            save_analysis as firebase_save_analysis,
+            db as firebase_db
+        )
+    except ImportError:
+        from app import (
+            download_youtube_audio,
+            transcribe_audio,
+            extract_sentences_with_timestamps,
+            analyze_sentences,
+            apply_smoothing,
+            summarize_results,
+            save_analysis as firebase_save_analysis,
+            db as firebase_db
+        )
+
+    return {
+        'download_youtube_audio': download_youtube_audio,
+        'transcribe_audio': transcribe_audio,
+        'extract_sentences_with_timestamps': extract_sentences_with_timestamps,
+        'analyze_sentences': analyze_sentences,
+        'apply_smoothing': apply_smoothing,
+        'summarize_results': summarize_results,
+        'firebase_save_analysis': firebase_save_analysis,
+        'firebase_db': firebase_db
+    }
 
 
 class BatchProcessingResult:
@@ -86,6 +116,15 @@ def process_single_video(
     Returns:
         Tuple of (success, error_message)
     """
+    # Lazy load app functions
+    funcs = _import_app_functions()
+    download_youtube_audio = funcs['download_youtube_audio']
+    transcribe_audio = funcs['transcribe_audio']
+    extract_sentences_with_timestamps = funcs['extract_sentences_with_timestamps']
+    analyze_sentences = funcs['analyze_sentences']
+    apply_smoothing = funcs['apply_smoothing']
+    summarize_results = funcs['summarize_results']
+
     try:
         logger.info(f"Processing video: {url}")
 
@@ -93,15 +132,18 @@ def process_single_video(
         logger.debug("Downloading audio...")
         try:
             audio_file = download_youtube_audio(url)
-        except HTTPException as e:
-            raise Exception(f"Download failed: {e.detail}")
+        except Exception as e:
+            # Handle both HTTPException and regular exceptions
+            error_detail = getattr(e, 'detail', str(e))
+            raise Exception(f"Download failed: {error_detail}")
 
         # 2. Transcribe audio (with translation if Hebrew/Arabic)
         logger.debug("Transcribing audio...")
         try:
             whisper_response = transcribe_audio(audio_file)
-        except HTTPException as e:
-            raise Exception(f"Transcription failed: {e.detail}")
+        except Exception as e:
+            error_detail = getattr(e, 'detail', str(e))
+            raise Exception(f"Transcription failed: {error_detail}")
         finally:
             # Clean up audio file
             if os.path.exists(audio_file):
@@ -258,7 +300,15 @@ def sync_to_firebase(
     Returns:
         Dictionary with sync statistics
     """
-    from .batch_db import get_all_results, get_db_connection
+    # Lazy load functions
+    funcs = _import_app_functions()
+    firebase_save_analysis = funcs['firebase_save_analysis']
+
+    try:
+        from .batch_db import get_all_results, get_db_connection
+    except ImportError:
+        from batch_db import get_all_results, get_db_connection
+
     import json
 
     logger.info("Starting Firebase sync...")
