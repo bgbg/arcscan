@@ -296,102 +296,48 @@ def download_youtube_subtitles(youtube_url, output_dir="downloads"):
         return None
 
 
+def validate_and_process_subtitles(subtitle_data):
+    """
+    Validate subtitle data and prepare for processing.
+    Returns dict with text, language, and detected language, or None if invalid.
+    """
+    if not subtitle_data:
+        return None
+    
+    text = subtitle_data.get('text', '').strip()
+    subtitle_lang = subtitle_data.get('language', '')
+    
+    # Validate: subtitles must have meaningful text
+    if not text or len(text) < 10:
+        print(f"Subtitle validation failed: insufficient text length ({len(text)} chars)")
+        return None
+    
+    try:
+        detected_lang = detect(text)
+    except Exception as e:
+        print(f"Language detection failed for subtitles: {e}")
+        return None
+    
+    # Return validated data with detected language
+    return {
+        'text': text,
+        'subtitle_language': subtitle_lang,
+        'detected_language': detected_lang,
+        'source': 'youtube_subtitles'
+    }
+
+
 # Transcribe audio to text using Whisper
-# A more optimized version that reduces API calls by batching segments
+# Subtitle-first flow: prefer subtitles, translate if non-English, fallback to Whisper
 
 def transcribe_audio(path):
-    try:
-        with open(path, "rb") as f:
-            result = client.audio.transcriptions.create(
-                model="whisper-1", 
-                file=f,
-                response_format="verbose_json",  # Get detailed output with timestamps
-                timestamp_granularities=["segment"]  # Get segment-level timestamps
-            )
-        
-        # Get the transcribed text
-        text = result.get("text", "")
-        
-        # Only detect and translate if there's text
-        if text:
-            try:
-                # Detect language
-                detected_lang = detect(text)
-                
-                # Only translate Hebrew or Arabic
-                if detected_lang in ['he', 'ar']:
-                    # Store original text and language
-                    original_text = text
-                    original_lang = detected_lang
-                    
-                    # Use GPT for translation
-                    translation_response = client.chat.completions.create(
-                        model="gpt-3.5-turbo",
-                        messages=[
-                            {"role": "system", "content": f"You are a professional translator from {detected_lang} to English. Translate the following text accurately while preserving the meaning and tone:"},
-                            {"role": "user", "content": text}
-                        ],
-                        temperature=0.3  # Lower temperature for more accurate translations
-                    )
-                    
-                    # Extract translated text from response
-                    translated_text = translation_response.choices[0].message.content.strip()
-                    
-                    # Store the translated text in the result
-                    result["original_text"] = original_text
-                    result["translated_text"] = translated_text
-                    result["detected_language"] = detected_lang
-                    
-                    # Replace the text with translated version for analysis
-                    result["text"] = translated_text
-                    
-                    # Batch translate segments to reduce API calls
-                    # Group segments into batches of 10
-                    segments = result.get("segments", [])
-                    batch_size = 10
-                    for i in range(0, len(segments), batch_size):
-                        batch = segments[i:i+batch_size]
-                        
-                        # Skip empty segments
-                        if not batch:
-                            continue
-                            
-                        # Create a numbered list of segments for translation
-                        segment_texts = [f"{j+1}. {seg.get('text', '').strip()}" for j, seg in enumerate(batch)]
-                        combined_text = "\n".join(segment_texts)
-                        
-                        # Translate the batch
-                        batch_translation = client.chat.completions.create(
-                            model="gpt-3.5-turbo",
-                            messages=[
-                                {"role": "system", "content": f"You are a professional translator from {detected_lang} to English. Translate each numbered segment below from {detected_lang} to English. Keep the same numbering format in your response (1., 2., etc.) and translate each segment on its own line:"},
-                                {"role": "user", "content": combined_text}
-                            ],
-                            temperature=0.3
-                        )
-                        
-                        # Parse the translated segments
-                        translated_batch = batch_translation.choices[0].message.content.strip()
-                        translated_lines = translated_batch.split('\n')
-                        
-                        # Update each segment with its translation
-                        for j, seg in enumerate(batch):
-                            # Find the corresponding translated line
-                            for line in translated_lines:
-                                if line.startswith(f"{j+1}."):
-                                    # Extract translation (remove the numbering)
-                                    translation = line[line.find(".")+1:].strip()
-                                    seg["original_text"] = seg.get("text", "")
-                                    seg["text"] = translation
-                                    break
-            except Exception as e:
-                # If translation fails, just continue with original text
-                print(f"Translation error: {e}")
-                pass
-        
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Transcription error: {e}")
+    \"\"\"
+    Transcribe audio with subtitle-first flow.
+    Decision path: Try subtitles → validate → detect language → translate if needed → fallback to Whisper.
+    Returns dict with text, detected_language, source, and metadata.
+    \"\"\"
+    result = {
+        \"source\": None,\n        \"detected_language\": None,\n        \"original_text\": None,\n        \"translated_text\": None,\n    }\n    \n    try:\n        # Note: Called from batch_processor with subtitles already attempted\n        # This path handles pure Whisper transcription\n        with open(path, \"rb\") as f:\n            whisper_result = client.audio.transcriptions.create(\n                model=\"whisper-1\", \n                file=f,\n                response_format=\"verbose_json\",\n                timestamp_granularities=[\"segment\"]\n            )\n        \n        text = whisper_result.get(\"text\", \"\").strip()\n        if not text:\n            raise ValueError(\"Whisper returned empty transcription\")\n        \n        # Detect language from Whisper output\n        try:\n            detected_lang = detect(text)\n        except Exception as e:\n            print(f\"Language detection failed: {e}\")\n            detected_lang = \"unknown\"\n        \n        # Translate if non-English\n        if detected_lang not in ['en', 'unknown']:\n            print(f\"Translating from {detected_lang} to English via GPT...\")\n            translation_response = client.chat.completions.create(\n                model=\"gpt-3.5-turbo\",\n                messages=[\n                    {\"role\": \"system\", \"content\": f\"Translate from {detected_lang} to English. Preserve meaning and tone. Output only translated text.\"},\n                    {\"role\": \"user\", \"content\": text}\n                ],\n                temperature=0.3\n            )\n            translated_text = translation_response.choices[0].message.content.strip()\n            result[\"original_text\"] = text\n            result[\"translated_text\"] = translated_text\n            result[\"text\"] = translated_text\n        else:\n            result[\"text\"] = text\n        \n        result[\"detected_language\"] = detected_lang\n        result[\"source\"] = \"whisper_transcription\"\n        result[\"segments\"] = whisper_result.get(\"segments\", [])\n        \n        return result\n    except Exception as e:\n        raise HTTPException(status_code=500, detail=f\"Transcription error: {e}\")
 
 # Process whisper response to extract sentences with timestamps
 def extract_sentences_with_timestamps(whisper_response):
