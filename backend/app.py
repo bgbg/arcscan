@@ -1,6 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from typing import Optional
 from transformers import pipeline
 from dotenv import load_dotenv
 import openai
@@ -744,5 +746,186 @@ async def get_advanced_results(video_url: str):
     doc_ref = db.collection("advanced_analyses").document(doc_id).get()
     if doc_ref.exists:
         return doc_ref.to_dict()
-    
+
     raise HTTPException(status_code=404, detail="Advanced analysis not found")
+
+
+# ============================================================================
+# BATCH PROCESSING ENDPOINTS
+# ============================================================================
+
+# Import batch processing modules
+from .csv_parser import parse_csv, validate_csv_format
+from .batch_processor import process_video_batch, sync_to_firebase
+from .batch_db import (
+    get_all_results,
+    get_videos_by_politician,
+    get_politician_summary,
+    get_date_range_results,
+    get_sentiment_statistics,
+    DEFAULT_DB_PATH
+)
+
+
+class BatchAnalyzeRequest(BaseModel):
+    csv_data: str
+    user_id: Optional[str] = None
+    sync_firebase: bool = False
+    skip_existing: bool = True
+
+
+@app.post("/batch/analyze")
+async def batch_analyze(req: BatchAnalyzeRequest):
+    """
+    Batch analyze multiple videos from CSV data.
+
+    CSV format: date,name,url
+
+    Returns:
+        Processing results with statistics
+    """
+    # Validate CSV format
+    is_valid, error_msg = validate_csv_format(req.csv_data, is_file_path=False)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    # Parse CSV
+    try:
+        videos = parse_csv(req.csv_data, is_file_path=False)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not videos:
+        raise HTTPException(status_code=400, detail="No valid videos found in CSV")
+
+    # Process batch
+    result = process_video_batch(
+        videos=videos,
+        db_path=DEFAULT_DB_PATH,
+        skip_existing=req.skip_existing
+    )
+
+    # Optionally sync to Firebase
+    sync_stats = None
+    if req.sync_firebase and req.user_id:
+        sync_stats = sync_to_firebase(
+            user_id=req.user_id,
+            db_path=DEFAULT_DB_PATH
+        )
+
+    response = result.to_dict()
+    if sync_stats:
+        response["firebase_sync"] = sync_stats
+
+    return response
+
+
+@app.post("/batch/upload")
+async def batch_upload(
+    file: UploadFile = File(...),
+    user_id: Optional[str] = Form(None),
+    sync_firebase: bool = Form(False),
+    skip_existing: bool = Form(True)
+):
+    """
+    Upload CSV file for batch analysis.
+
+    Accepts multipart/form-data file upload.
+
+    Returns:
+        Processing results with statistics
+    """
+    # Read CSV file
+    contents = await file.read()
+    csv_data = contents.decode('utf-8')
+
+    # Use the same logic as batch_analyze
+    req = BatchAnalyzeRequest(
+        csv_data=csv_data,
+        user_id=user_id,
+        sync_firebase=sync_firebase,
+        skip_existing=skip_existing
+    )
+
+    return await batch_analyze(req)
+
+
+@app.get("/batch/results")
+async def get_batch_results(
+    politician: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    status: Optional[str] = None
+):
+    """
+    Query batch analysis results from SQLite.
+
+    Args:
+        politician: Filter by politician name
+        start_date: Filter by start date (YYYY-MM-DD)
+        end_date: Filter by end date (YYYY-MM-DD)
+        status: Filter by status (complete, error, pending)
+
+    Returns:
+        List of analysis results
+    """
+    # Apply filters
+    if politician:
+        results = get_videos_by_politician(politician, DEFAULT_DB_PATH)
+    elif start_date and end_date:
+        results = get_date_range_results(start_date, end_date, DEFAULT_DB_PATH)
+    else:
+        results = get_all_results(DEFAULT_DB_PATH)
+
+    # Filter by status if provided
+    if status:
+        results = [r for r in results if r.get("status") == status]
+
+    return {
+        "total": len(results),
+        "results": results
+    }
+
+
+@app.get("/batch/politicians")
+async def get_politicians():
+    """
+    Get list of all politicians with their video counts.
+
+    Returns:
+        List of politicians with statistics
+    """
+    stats = get_sentiment_statistics(DEFAULT_DB_PATH)
+
+    politicians = []
+    for name, data in stats.get("by_politician", {}).items():
+        summary = get_politician_summary(name, DEFAULT_DB_PATH)
+        politicians.append({
+            "name": name,
+            "video_count": data["count"],
+            "sentiment_distribution": data["sentiment"],
+            "date_range": {
+                "earliest": summary.get("earliest_date"),
+                "latest": summary.get("latest_date")
+            },
+            "status": {
+                "completed": summary.get("completed", 0),
+                "errors": summary.get("errors", 0)
+            }
+        })
+
+    return {
+        "total_politicians": len(politicians),
+        "politicians": sorted(politicians, key=lambda x: x["video_count"], reverse=True)
+    }
+
+
+@app.get("/batch/statistics")
+async def get_batch_statistics():
+    """
+    Get overall batch processing statistics.
+
+    Returns:
+        Statistics including sentiment distribution
+    """
+    return get_sentiment_statistics(DEFAULT_DB_PATH)
