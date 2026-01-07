@@ -201,12 +201,6 @@ def process_single_video(
                 if audio_file and os.path.exists(audio_file):
                     os.remove(audio_file)
 
-        # Get the transcribed text
-        text = whisper_response.get("text", "")
-
-        # Check if we have a translation
-        has_translation = isinstance(whisper_response, dict) and "translated_text" in whisper_response
-
         # Extract sentences with timestamps
         sentences = extract_sentences_with_timestamps(whisper_response)
 
@@ -222,6 +216,10 @@ def process_single_video(
         logger.debug("Summarizing results...")
         summary, overall = summarize_results(analysis)
 
+        # Get text and translation info for storage
+        text = whisper_response.get("text", "")
+        has_translation = "translated_text" in whisper_response
+
         # 6. Save to SQLite
         result_data = {
             "video_url": url,
@@ -230,7 +228,8 @@ def process_single_video(
             "summary": summary,
             "overall_sentiment": overall,
             "timeline_data": timeline_data,
-            "detected_language": whisper_response.get("detected_language") if has_translation else None,
+            "detected_language": whisper_response.get("detected_language"),
+            "decision_path": "_".join(decision_log),
         }
 
         # Add translation info if available

@@ -391,21 +391,47 @@ def transcribe_audio(path):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Transcription error: {e}")
 
-# Process whisper response to extract sentences with timestamps
-def extract_sentences_with_timestamps(whisper_response):
+# Process whisper response or subtitle text to extract sentences with timestamps
+def extract_sentences_with_timestamps(response_data):
+    """
+    Extract sentences from either Whisper response (with segments) or subtitle text.
+    Returns list of dicts with text, start_time, end_time.
+    """
     sentences = []
     
-    for segment in whisper_response.get("segments", []):
-        text = segment.get("text", "").strip()
-        start = segment.get("start", 0)
-        end = segment.get("end", 0)
-        
+    # Case 1: Whisper response with segments (has timestamps)
+    if "segments" in response_data and response_data["segments"]:
+        for segment in response_data["segments"]:
+            text = segment.get("text", "").strip()
+            start = segment.get("start", 0)
+            end = segment.get("end", 0)
+            
+            if text:
+                sentences.append({
+                    "text": text,
+                    "start_time": start,
+                    "end_time": end
+                })
+    # Case 2: Subtitle text without segments (no timestamps)
+    else:
+        text = response_data.get("text", "").strip()
         if text:
-            sentences.append({
-                "text": text,
-                "start_time": start,
-                "end_time": end
-            })
+            # Split text into sentences using simple heuristics (period, newline, etc.)
+            import re
+            # Split on sentence boundaries
+            sentence_texts = re.split(r'(?<=[.!?])\s+|[\n]+', text)
+            cumulative_time = 0
+            for sentence_text in sentence_texts:
+                sentence_text = sentence_text.strip()
+                if sentence_text:
+                    # Estimate duration: 1 second per 25 chars (rough average reading speed)
+                    duration = max(0.5, len(sentence_text) / 25.0)
+                    sentences.append({
+                        "text": sentence_text,
+                        "start_time": cumulative_time,
+                        "end_time": cumulative_time + duration
+                    })
+                    cumulative_time += duration
     
     return sentences
 
