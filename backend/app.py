@@ -331,13 +331,65 @@ def validate_and_process_subtitles(subtitle_data):
 # Subtitle-first flow: prefer subtitles, translate if non-English, fallback to Whisper
 
 def transcribe_audio(path):
-    \"\"\"
+    """
     Transcribe audio with subtitle-first flow.
     Decision path: Try subtitles → validate → detect language → translate if needed → fallback to Whisper.
     Returns dict with text, detected_language, source, and metadata.
-    \"\"\"
+    """
     result = {
-        \"source\": None,\n        \"detected_language\": None,\n        \"original_text\": None,\n        \"translated_text\": None,\n    }\n    \n    try:\n        # Note: Called from batch_processor with subtitles already attempted\n        # This path handles pure Whisper transcription\n        with open(path, \"rb\") as f:\n            whisper_result = client.audio.transcriptions.create(\n                model=\"whisper-1\", \n                file=f,\n                response_format=\"verbose_json\",\n                timestamp_granularities=[\"segment\"]\n            )\n        \n        text = whisper_result.get(\"text\", \"\").strip()\n        if not text:\n            raise ValueError(\"Whisper returned empty transcription\")\n        \n        # Detect language from Whisper output\n        try:\n            detected_lang = detect(text)\n        except Exception as e:\n            print(f\"Language detection failed: {e}\")\n            detected_lang = \"unknown\"\n        \n        # Translate if non-English\n        if detected_lang not in ['en', 'unknown']:\n            print(f\"Translating from {detected_lang} to English via GPT...\")\n            translation_response = client.chat.completions.create(\n                model=\"gpt-3.5-turbo\",\n                messages=[\n                    {\"role\": \"system\", \"content\": f\"Translate from {detected_lang} to English. Preserve meaning and tone. Output only translated text.\"},\n                    {\"role\": \"user\", \"content\": text}\n                ],\n                temperature=0.3\n            )\n            translated_text = translation_response.choices[0].message.content.strip()\n            result[\"original_text\"] = text\n            result[\"translated_text\"] = translated_text\n            result[\"text\"] = translated_text\n        else:\n            result[\"text\"] = text\n        \n        result[\"detected_language\"] = detected_lang\n        result[\"source\"] = \"whisper_transcription\"\n        result[\"segments\"] = whisper_result.get(\"segments\", [])\n        \n        return result\n    except Exception as e:\n        raise HTTPException(status_code=500, detail=f\"Transcription error: {e}\")
+        "source": None,
+        "detected_language": None,
+        "original_text": None,
+        "translated_text": None,
+    }
+    
+    try:
+        # Note: Called from batch_processor with subtitles already attempted
+        # This path handles pure Whisper transcription
+        with open(path, "rb") as f:
+            whisper_result = client.audio.transcriptions.create(
+                model="whisper-1", 
+                file=f,
+                response_format="verbose_json",
+                timestamp_granularities=["segment"]
+            )
+        
+        text = whisper_result.get("text", "").strip()
+        if not text:
+            raise ValueError("Whisper returned empty transcription")
+        
+        # Detect language from Whisper output
+        try:
+            detected_lang = detect(text)
+        except Exception as e:
+            print(f"Language detection failed: {e}")
+            detected_lang = "unknown"
+        
+        # Translate if non-English
+        if detected_lang not in ['en', 'unknown']:
+            print(f"Translating from {detected_lang} to English via GPT...")
+            translation_response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": f"Translate from {detected_lang} to English. Preserve meaning and tone. Output only translated text."},
+                    {"role": "user", "content": text}
+                ],
+                temperature=0.3
+            )
+            translated_text = translation_response.choices[0].message.content.strip()
+            result["original_text"] = text
+            result["translated_text"] = translated_text
+            result["text"] = translated_text
+        else:
+            result["text"] = text
+        
+        result["detected_language"] = detected_lang
+        result["source"] = "whisper_transcription"
+        result["segments"] = whisper_result.get("segments", [])
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription error: {e}")
 
 # Process whisper response to extract sentences with timestamps
 def extract_sentences_with_timestamps(whisper_response):
