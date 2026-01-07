@@ -146,10 +146,13 @@ def save_video_analysis(
     # Extract key fields from data
     transcription = data.get("transcription", "")
     if isinstance(transcription, dict):
-        # Handle translated transcription format
         transcription = transcription.get("translated_text") or transcription.get("text", "")
 
-    language = data.get("detected_language", "") or data.get("language", "")
+    language = (
+        data.get("output_language")
+        or data.get("detected_language")
+        or data.get("language", "")
+    )
 
     # Serialize full analysis to JSON
     analysis_json = json.dumps(data)

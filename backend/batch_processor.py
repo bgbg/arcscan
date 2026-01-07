@@ -216,19 +216,26 @@ def process_single_video(
         logger.debug("Summarizing results...")
         summary, overall = summarize_results(analysis)
 
-        # Get text and translation info for storage
+        # Normalize text/metadata for storage (always store English when translated)
         text = whisper_response.get("text", "")
         has_translation = "translated_text" in whisper_response
+        final_text = whisper_response.get("translated_text") if has_translation else text
+        detected_language = whisper_response.get("detected_language")
+        output_language = "en" if has_translation or detected_language == "en" else (detected_language or "unknown")
 
         # 6. Save to SQLite
         result_data = {
             "video_url": url,
-            "transcription": whisper_response if has_translation else text,
+            "transcription": final_text,
+            "text": final_text,
             "sentences": analysis,
             "summary": summary,
             "overall_sentiment": overall,
             "timeline_data": timeline_data,
-            "detected_language": whisper_response.get("detected_language"),
+            "detected_language": detected_language,
+            "output_language": output_language,
+            "source": whisper_response.get("source"),
+            "subtitle_language": whisper_response.get("subtitle_language"),
             "decision_path": "_".join(decision_log),
         }
 
@@ -237,6 +244,7 @@ def process_single_video(
             result_data.update({
                 "original_text": whisper_response.get("original_text"),
                 "translated_text": whisper_response.get("translated_text"),
+                "translation_model": "gpt-3.5-turbo",
             })
 
         save_video_analysis(
