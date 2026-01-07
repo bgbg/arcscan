@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+downloads/
+*.mp3
+firebase_credentials.json
+backend/firebase_test.py
+node_modules/
+
+# Claude Code
+.claude/*
+!.claude/commands/
+
+results/
