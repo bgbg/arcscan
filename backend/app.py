@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import Optional
 from transformers import pipeline
 from dotenv import load_dotenv
-import openai
+from openai import OpenAI, APIError as OpenAIAPIError
 import os
 import yt_dlp
 import uuid
@@ -31,7 +31,17 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 # Load environment variables
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# Initialize OpenAI client (>=1.0)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Optional: Setup LangSmith tracing if API key is configured
+if os.getenv("LANGSMITH_API_KEY"):
+    from langsmith.wrappers import wrap_openai
+    try:
+        client = wrap_openai(client)
+    except Exception as e:
+        print(f"Warning: LangSmith wrapping failed: {e}. Continuing without tracing.")
 
 # Initialize Firebase (optional - only needed for web API, not batch processing)
 db = None
@@ -292,7 +302,7 @@ def download_youtube_subtitles(youtube_url, output_dir="downloads"):
 def transcribe_audio(path):
     try:
         with open(path, "rb") as f:
-            result = openai.Audio.transcribe(
+            result = client.audio.transcriptions.create(
                 model="whisper-1", 
                 file=f,
                 response_format="verbose_json",  # Get detailed output with timestamps
@@ -315,7 +325,7 @@ def transcribe_audio(path):
                     original_lang = detected_lang
                     
                     # Use GPT for translation
-                    translation_response = openai.ChatCompletion.create(
+                    translation_response = client.chat.completions.create(
                         model="gpt-3.5-turbo",
                         messages=[
                             {"role": "system", "content": f"You are a professional translator from {detected_lang} to English. Translate the following text accurately while preserving the meaning and tone:"},
@@ -325,7 +335,7 @@ def transcribe_audio(path):
                     )
                     
                     # Extract translated text from response
-                    translated_text = translation_response.choices[0].message['content'].strip()
+                    translated_text = translation_response.choices[0].message.content.strip()
                     
                     # Store the translated text in the result
                     result["original_text"] = original_text
@@ -351,7 +361,7 @@ def transcribe_audio(path):
                         combined_text = "\n".join(segment_texts)
                         
                         # Translate the batch
-                        batch_translation = openai.ChatCompletion.create(
+                        batch_translation = client.chat.completions.create(
                             model="gpt-3.5-turbo",
                             messages=[
                                 {"role": "system", "content": f"You are a professional translator from {detected_lang} to English. Translate each numbered segment below from {detected_lang} to English. Keep the same numbering format in your response (1., 2., etc.) and translate each segment on its own line:"},
@@ -361,7 +371,7 @@ def transcribe_audio(path):
                         )
                         
                         # Parse the translated segments
-                        translated_batch = batch_translation.choices[0].message['content'].strip()
+                        translated_batch = batch_translation.choices[0].message.content.strip()
                         translated_lines = translated_batch.split('\n')
                         
                         # Update each segment with its translation
