@@ -470,6 +470,10 @@ def rollback_migration(db_path: str = DEFAULT_DB_PATH) -> None:
             logger.error("No backup table found. Cannot rollback.")
             return
 
+        # Drop views first (they may depend on tables we're about to drop)
+        logger.info("Dropping views...")
+        cursor.execute("DROP VIEW IF EXISTS videos_legacy")
+
         # Drop new tables
         logger.info("Dropping new schema tables...")
         new_tables = [
@@ -483,6 +487,9 @@ def rollback_migration(db_path: str = DEFAULT_DB_PATH) -> None:
         ]
         for table in new_tables:
             cursor.execute(f"DROP TABLE IF EXISTS {table}")
+
+        # Drop legacy videos table if it exists (in case migration was partially complete)
+        cursor.execute("DROP TABLE IF EXISTS videos")
 
         # Restore videos table from backup
         logger.info("Restoring videos table from backup...")

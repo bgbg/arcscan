@@ -675,20 +675,27 @@ def get_person_summary(
     use_new_schema = cursor.fetchone() is not None
 
     if use_new_schema:
-        table_name = "video_metadata"
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_videos,
+                MIN(date) as earliest_date,
+                MAX(date) as latest_date,
+                SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors
+            FROM video_metadata
+            WHERE person_name = ?
+        """, (person_name,))
     else:
-        table_name = "videos"
-
-    cursor.execute(f"""
-        SELECT
-            COUNT(*) as total_videos,
-            MIN(date) as earliest_date,
-            MAX(date) as latest_date,
-            SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) as completed,
-            SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors
-        FROM {table_name}
-        WHERE person_name = ?
-    """, (person_name,))
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_videos,
+                MIN(date) as earliest_date,
+                MAX(date) as latest_date,
+                SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors
+            FROM videos
+            WHERE person_name = ?
+        """, (person_name,))
 
     row = cursor.fetchone()
     conn.close()
