@@ -348,23 +348,31 @@ def transcribe_audio(path):
         # This path handles pure Whisper transcription
         with open(path, "rb") as f:
             whisper_result = client.audio.transcriptions.create(
-                model="whisper-1", 
+                model="whisper-1",
                 file=f,
                 response_format="verbose_json",
                 timestamp_granularities=["segment"]
             )
-        
-        text = whisper_result.get("text", "").strip()
+
+        # Convert Pydantic model to dict if needed (openai >= 1.x)
+        if hasattr(whisper_result, 'model_dump'):
+            whisper_dict = whisper_result.model_dump()
+        elif hasattr(whisper_result, 'dict'):
+            whisper_dict = whisper_result.dict()
+        else:
+            whisper_dict = dict(whisper_result)
+
+        text = whisper_dict.get("text", "").strip()
         if not text:
             raise ValueError("Whisper returned empty transcription")
-        
+
         # Detect language from Whisper output
         try:
             detected_lang = detect(text)
         except Exception as e:
             print(f"Language detection failed: {e}")
             detected_lang = "unknown"
-        
+
         # Translate if non-English
         if detected_lang not in ['en', 'unknown']:
             print(f"Translating from {detected_lang} to English via GPT...")
@@ -382,10 +390,10 @@ def transcribe_audio(path):
             result["text"] = translated_text
         else:
             result["text"] = text
-        
+
         result["detected_language"] = detected_lang
         result["source"] = "whisper_transcription"
-        result["segments"] = whisper_result.get("segments", [])
+        result["segments"] = whisper_dict.get("segments", [])
         
         return result
     except Exception as e:
