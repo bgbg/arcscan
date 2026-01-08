@@ -1,15 +1,26 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from typing import Optional
 from transformers import pipeline
 from dotenv import load_dotenv
-import openai
+from openai import OpenAI, APIError as OpenAIAPIError
 import os
 import yt_dlp
 import uuid
 import re
-import firebase_admin
-from firebase_admin import credentials, firestore
+"""
+Firebase imports are optional. In non-Firebase environments (CLI batch processing),
+we avoid hard failures if the package isn't installed.
+"""
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+except Exception:
+    firebase_admin = None
+    credentials = None
+    firestore = None
 #from textblob import TextBlob
 from collections import Counter
 from transformers import pipeline as transformers_pipeline
@@ -20,12 +31,29 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 # Load environment variables
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Initialize Firebase
-cred = credentials.Certificate("firebase_credentials.json")
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+# Initialize OpenAI client (>=1.0)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Optional: Setup LangSmith tracing if API key is configured
+if os.getenv("LANGSMITH_API_KEY"):
+    from langsmith.wrappers import wrap_openai
+    try:
+        client = wrap_openai(client)
+    except Exception as e:
+        print(f"Warning: LangSmith wrapping failed: {e}. Continuing without tracing.")
+
+# Initialize Firebase (optional - only needed for web API, not batch processing)
+db = None
+try:
+    if firebase_admin and credentials and firestore and os.path.exists("firebase_credentials.json"):
+        cred = credentials.Certificate("firebase_credentials.json")
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+    else:
+        print("Warning: Firebase not configured or credentials missing. Firebase features disabled.")
+except Exception as e:
+    print(f"Warning: Firebase initialization failed: {e}. Firebase features disabled.")
 
 # Initialize the translator
 #translator = Translator()
@@ -145,119 +173,278 @@ def download_youtube_audio(youtube_url, output_dir="downloads"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Download error: {e}")
 
+
+def download_youtube_subtitles(youtube_url, output_dir="downloads"):
+    """
+    Try to download YouTube subtitles if available.
+    Returns subtitle data dict with text and segments, or None if no subtitles.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    unique_id = str(uuid.uuid4())
+
+    ydl_opts = {
+        'writesubtitles': True,
+        'writeautomaticsub': True,  # Also try auto-generated captions
+        'subtitleslangs': ['en', 'he', 'ar'],  # Prefer these languages
+        'skip_download': True,  # Don't download video
+        'subtitlesformat': 'vtt/best',
+        'outtmpl': os.path.join(output_dir, f'subtitle_{unique_id}'),
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Get video info to check for subtitles
+            info = ydl.extract_info(youtube_url, download=False)
+
+            # Check if subtitles are available
+            subtitles = info.get('subtitles', {})
+            automatic_captions = info.get('automatic_captions', {})
+
+            # Prefer manual subtitles over automatic
+            available_subs = subtitles if subtitles else automatic_captions
+
+            if not available_subs:
+                return None
+
+            # Try to find subtitles in order of preference
+            preferred_langs = ['en', 'he', 'ar']
+            selected_lang = None
+
+            for lang in preferred_langs:
+                if lang in available_subs:
+                    selected_lang = lang
+                    break
+
+            # If no preferred language, take the first available
+            if not selected_lang and available_subs:
+                selected_lang = list(available_subs.keys())[0]
+
+            if not selected_lang:
+                return None
+
+            # Download the subtitle
+            ydl_opts['subtitleslangs'] = [selected_lang]
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
+                ydl_download.download([youtube_url])
+
+            # Find the downloaded subtitle file
+            subtitle_file = None
+            for ext in ['.vtt', '.srt']:
+                potential_file = os.path.join(output_dir, f'subtitle_{unique_id}.{selected_lang}{ext}')
+                if os.path.exists(potential_file):
+                    subtitle_file = potential_file
+                    break
+
+            if not subtitle_file or not os.path.exists(subtitle_file):
+                return None
+
+            # Parse the subtitle file
+            with open(subtitle_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Clean up subtitle file
+            os.remove(subtitle_file)
+
+            # Parse VTT/SRT format to extract text and timestamps
+            import re
+
+            # Remove VTT header
+            content = re.sub(r'^WEBVTT\n\n', '', content)
+            content = re.sub(r'^NOTE.*?\n\n', '', content, flags=re.MULTILINE)
+
+            # Extract segments with timestamps
+            segments = []
+            full_text = []
+
+            # Pattern for VTT timestamps: 00:00:00.000 --> 00:00:05.000
+            pattern = r'(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})\n(.+?)(?=\n\n|\Z)'
+            matches = re.findall(pattern, content, re.DOTALL)
+
+            for start_time, end_time, text in matches:
+                # Convert timestamp to seconds
+                def timestamp_to_seconds(ts):
+                    h, m, s = ts.split(':')
+                    s, ms = s.split('.')
+                    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+
+                # Clean text (remove HTML tags, extra whitespace)
+                clean_text = re.sub(r'<[^>]+>', '', text)
+                clean_text = re.sub(r'\n', ' ', clean_text)
+                clean_text = clean_text.strip()
+
+                if clean_text:
+                    segments.append({
+                        'start': timestamp_to_seconds(start_time),
+                        'end': timestamp_to_seconds(end_time),
+                        'text': clean_text
+                    })
+                    full_text.append(clean_text)
+
+            if not segments:
+                return None
+
+            return {
+                'text': ' '.join(full_text),
+                'segments': segments,
+                'language': selected_lang,
+                'source': 'youtube_subtitles'
+            }
+
+    except Exception as e:
+        # If subtitle download fails, return None to fall back to Whisper
+        print(f"Subtitle download failed: {e}")
+        return None
+
+
+def validate_and_process_subtitles(subtitle_data):
+    """
+    Validate subtitle data and prepare for processing.
+    Returns dict with text, language, and detected language, or None if invalid.
+    """
+    if not subtitle_data:
+        return None
+    
+    text = subtitle_data.get('text', '').strip()
+    subtitle_lang = subtitle_data.get('language', '')
+    
+    # Validate: subtitles must have meaningful text
+    if not text or len(text) < 10:
+        print(f"Subtitle validation failed: insufficient text length ({len(text)} chars)")
+        return None
+    
+    try:
+        detected_lang = detect(text)
+    except Exception as e:
+        print(f"Language detection failed for subtitles: {e}")
+        return None
+    
+    # Return validated data with detected language
+    return {
+        'text': text,
+        'subtitle_language': subtitle_lang,
+        'detected_language': detected_lang,
+        'source': 'youtube_subtitles'
+    }
+
+
 # Transcribe audio to text using Whisper
-# A more optimized version that reduces API calls by batching segments
+# Subtitle-first flow: prefer subtitles, translate if non-English, fallback to Whisper
 
 def transcribe_audio(path):
+    """
+    Transcribe audio with subtitle-first flow.
+    Decision path: Try subtitles → validate → detect language → translate if needed → fallback to Whisper.
+    Returns dict with text, detected_language, source, and metadata.
+    """
+    result = {
+        "source": None,
+        "detected_language": None,
+        "original_text": None,
+        "translated_text": None,
+    }
+    
     try:
+        # Note: Called from batch_processor with subtitles already attempted
+        # This path handles pure Whisper transcription
         with open(path, "rb") as f:
-            result = openai.Audio.transcribe(
-                model="whisper-1", 
+            whisper_result = client.audio.transcriptions.create(
+                model="whisper-1",
                 file=f,
-                response_format="verbose_json",  # Get detailed output with timestamps
-                timestamp_granularities=["segment"]  # Get segment-level timestamps
+                response_format="verbose_json",
+                timestamp_granularities=["segment"]
             )
-        
-        # Get the transcribed text
-        text = result.get("text", "")
-        
-        # Only detect and translate if there's text
-        if text:
-            try:
-                # Detect language
-                detected_lang = detect(text)
-                
-                # Only translate Hebrew or Arabic
-                if detected_lang in ['he', 'ar']:
-                    # Store original text and language
-                    original_text = text
-                    original_lang = detected_lang
-                    
-                    # Use GPT for translation
-                    translation_response = openai.ChatCompletion.create(
-                        model="gpt-3.5-turbo",
-                        messages=[
-                            {"role": "system", "content": f"You are a professional translator from {detected_lang} to English. Translate the following text accurately while preserving the meaning and tone:"},
-                            {"role": "user", "content": text}
-                        ],
-                        temperature=0.3  # Lower temperature for more accurate translations
-                    )
-                    
-                    # Extract translated text from response
-                    translated_text = translation_response.choices[0].message['content'].strip()
-                    
-                    # Store the translated text in the result
-                    result["original_text"] = original_text
-                    result["translated_text"] = translated_text
-                    result["detected_language"] = detected_lang
-                    
-                    # Replace the text with translated version for analysis
-                    result["text"] = translated_text
-                    
-                    # Batch translate segments to reduce API calls
-                    # Group segments into batches of 10
-                    segments = result.get("segments", [])
-                    batch_size = 10
-                    for i in range(0, len(segments), batch_size):
-                        batch = segments[i:i+batch_size]
-                        
-                        # Skip empty segments
-                        if not batch:
-                            continue
-                            
-                        # Create a numbered list of segments for translation
-                        segment_texts = [f"{j+1}. {seg.get('text', '').strip()}" for j, seg in enumerate(batch)]
-                        combined_text = "\n".join(segment_texts)
-                        
-                        # Translate the batch
-                        batch_translation = openai.ChatCompletion.create(
-                            model="gpt-3.5-turbo",
-                            messages=[
-                                {"role": "system", "content": f"You are a professional translator from {detected_lang} to English. Translate each numbered segment below from {detected_lang} to English. Keep the same numbering format in your response (1., 2., etc.) and translate each segment on its own line:"},
-                                {"role": "user", "content": combined_text}
-                            ],
-                            temperature=0.3
-                        )
-                        
-                        # Parse the translated segments
-                        translated_batch = batch_translation.choices[0].message['content'].strip()
-                        translated_lines = translated_batch.split('\n')
-                        
-                        # Update each segment with its translation
-                        for j, seg in enumerate(batch):
-                            # Find the corresponding translated line
-                            for line in translated_lines:
-                                if line.startswith(f"{j+1}."):
-                                    # Extract translation (remove the numbering)
-                                    translation = line[line.find(".")+1:].strip()
-                                    seg["original_text"] = seg.get("text", "")
-                                    seg["text"] = translation
-                                    break
-            except Exception as e:
-                # If translation fails, just continue with original text
-                print(f"Translation error: {e}")
-                pass
+
+        # Convert Pydantic model to dict if needed (openai >= 1.x)
+        if hasattr(whisper_result, 'model_dump'):
+            whisper_dict = whisper_result.model_dump()
+        elif hasattr(whisper_result, 'dict'):
+            whisper_dict = whisper_result.dict()
+        else:
+            whisper_dict = dict(whisper_result)
+
+        text = whisper_dict.get("text", "").strip()
+        if not text:
+            raise ValueError("Whisper returned empty transcription")
+
+        # Detect language from Whisper output
+        try:
+            detected_lang = detect(text)
+        except Exception as e:
+            print(f"Language detection failed: {e}")
+            detected_lang = "unknown"
+
+        # Translate if non-English
+        if detected_lang not in ['en', 'unknown']:
+            print(f"Translating from {detected_lang} to English via GPT...")
+            translation_response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": f"Translate from {detected_lang} to English. Preserve meaning and tone. Output only translated text."},
+                    {"role": "user", "content": text}
+                ],
+                temperature=0.3
+            )
+            translated_text = translation_response.choices[0].message.content.strip()
+            result["original_text"] = text
+            result["translated_text"] = translated_text
+            result["text"] = translated_text
+        else:
+            result["text"] = text
+
+        result["detected_language"] = detected_lang
+        result["source"] = "whisper_transcription"
+        result["segments"] = whisper_dict.get("segments", [])
         
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Transcription error: {e}")
 
-# Process whisper response to extract sentences with timestamps
-def extract_sentences_with_timestamps(whisper_response):
+def extract_sentences_with_timestamps(response_data):
+    """Extract sentences from Whisper output or subtitles, with best-effort timings."""
     sentences = []
-    
-    for segment in whisper_response.get("segments", []):
-        text = segment.get("text", "").strip()
-        start = segment.get("start", 0)
-        end = segment.get("end", 0)
-        
+
+    # Normalize response_data to dict if it's an object
+    if hasattr(response_data, 'model_dump'):
+        response_data = response_data.model_dump()
+    elif hasattr(response_data, '__dict__') and not isinstance(response_data, dict):
+        response_data = response_data.__dict__
+
+    # Case 1: Whisper response with segments (has timestamps)
+    if isinstance(response_data, dict) and response_data.get("segments"):
+        for segment in response_data["segments"]:
+            text = segment.get("text", "").strip()
+            start = segment.get("start", 0)
+            end = segment.get("end", 0)
+            if text:
+                sentences.append({
+                    "text": text,
+                    "start_time": start,
+                    "end_time": end
+                })
+    # Case 2: Subtitle text without segments (no timestamps)
+    else:
+        text = ""
+        if isinstance(response_data, dict):
+            text = response_data.get("text", "")
+        elif isinstance(response_data, str):
+            text = response_data
+
+        text = text.strip()
         if text:
-            sentences.append({
-                "text": text,
-                "start_time": start,
-                "end_time": end
-            })
-    
+            import re
+            sentence_texts = re.split(r'(?<=[.!?])\s+|[\n]+', text)
+            cumulative_time = 0.0
+            for sentence_text in sentence_texts:
+                sentence_text = sentence_text.strip()
+                if sentence_text:
+                    duration = max(0.5, len(sentence_text) / 25.0)
+                    sentences.append({
+                        "text": sentence_text,
+                        "start_time": cumulative_time,
+                        "end_time": cumulative_time + duration
+                    })
+                    cumulative_time += duration
+
     return sentences
 
 # Analyze each sentence with EmoRoBERTa
@@ -352,7 +539,6 @@ def summarize_results(sentences):
     overall = max(counts, key=counts.get)
     return summary, overall
 
-# Main endpoint to analyze video
 @app.post("/analyze")
 async def analyze(req: AnalyzeRequest):
     # Check if analysis already exists
@@ -366,7 +552,7 @@ async def analyze(req: AnalyzeRequest):
 
     try:
         # 1. Download audio
-        update_progress(req.url, req.user_id, "downloading", 10, "Downloading audio from YouTube...")
+        update_progress(req.url, req.user_id, "downloading", 10, "Downloading audio...")
         audio_file = download_youtube_audio(req.url)
         update_progress(req.url, req.user_id, "downloaded", 20, "Audio downloaded successfully!")
         
@@ -405,6 +591,52 @@ async def analyze(req: AnalyzeRequest):
         update_progress(req.url, req.user_id, "transcribed", 50, "Speech successfully converted to text!")
         
         # 3. Analyze sentences
+        update_progress(req.url, req.user_id, "analyzing", 60, "Analyzing emotional content...")
+        analysis = analyze_sentences(sentences)
+        
+        # 4. Create timeline
+        update_progress(req.url, req.user_id, "creating_timeline", 80, "Building sentiment timeline...")
+        timeline_data = apply_smoothing(analysis)
+        
+        # 5. Summarize results
+        update_progress(req.url, req.user_id, "summarizing", 90, "Creating emotional summary...")
+        summary, overall = summarize_results(analysis)
+        
+        # Save complete analysis
+        if has_translation:
+            save_analysis(
+                req.user_id, req.url, whisper_response, analysis, summary, overall, timeline_data
+            )
+        else:
+            save_analysis(
+                req.user_id, req.url, text, analysis, summary, overall, timeline_data
+            )
+        
+        update_progress(req.url, req.user_id, "complete", 100, "Analysis complete!")
+        
+        # Clean up
+        os.remove(audio_file)
+
+        # Create response data
+        response_data = {
+            "user_id": req.user_id,
+            "video_url": req.url,
+            "transcription": text,
+            "sentences": analysis,
+            "summary": summary,
+            "overall_sentiment": overall,
+            "timeline_data": timeline_data,
+            "status": "complete"
+        }
+        
+        # Add translation info if available
+        if translation_info:
+            response_data.update(translation_info)
+            
+        return response_data
+    except Exception as e:
+        update_progress(req.url, req.user_id, "error", 0, f"Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
         update_progress(req.url, req.user_id, "analyzing", 60, "Analyzing emotional content...")
         analysis = analyze_sentences(sentences)
         
@@ -744,5 +976,198 @@ async def get_advanced_results(video_url: str):
     doc_ref = db.collection("advanced_analyses").document(doc_id).get()
     if doc_ref.exists:
         return doc_ref.to_dict()
-    
+
     raise HTTPException(status_code=404, detail="Advanced analysis not found")
+
+
+# ============================================================================
+# BATCH PROCESSING ENDPOINTS
+# ============================================================================
+
+# Import batch processing modules with flexible paths (support CLI context)
+try:
+    from .csv_parser import parse_csv, validate_csv_format
+    from .batch_processor import process_video_batch, sync_to_firebase
+    from .batch_db import (
+        get_all_results,
+        get_videos_by_person,
+        get_person_summary,
+        get_date_range_results,
+        get_sentiment_statistics,
+        DEFAULT_DB_PATH
+    )
+except ImportError:
+    from csv_parser import parse_csv, validate_csv_format
+    from batch_processor import process_video_batch, sync_to_firebase
+    from batch_db import (
+        get_all_results,
+        get_videos_by_person,
+        get_person_summary,
+        get_date_range_results,
+        get_sentiment_statistics,
+        DEFAULT_DB_PATH
+    )
+
+
+class BatchAnalyzeRequest(BaseModel):
+    csv_data: str
+    user_id: Optional[str] = None
+    sync_firebase: bool = False
+    skip_existing: bool = True
+
+
+@app.post("/batch/analyze")
+async def batch_analyze(req: BatchAnalyzeRequest):
+    """
+    Batch analyze multiple videos from CSV data.
+
+    CSV format: date,name,url
+
+    Returns:
+        Processing results with statistics
+    """
+    # Validate CSV format
+    is_valid, error_msg = validate_csv_format(req.csv_data, is_file_path=False)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    # Parse CSV
+    try:
+        videos = parse_csv(req.csv_data, is_file_path=False)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not videos:
+        raise HTTPException(status_code=400, detail="No valid videos found in CSV")
+
+    # Process batch
+    result = process_video_batch(
+        videos=videos,
+        db_path=DEFAULT_DB_PATH,
+        skip_existing=req.skip_existing
+    )
+
+    # Optionally sync to Firebase
+    sync_stats = None
+    if req.sync_firebase and req.user_id:
+        sync_stats = sync_to_firebase(
+            user_id=req.user_id,
+            db_path=DEFAULT_DB_PATH
+        )
+
+    response = result.to_dict()
+    if sync_stats:
+        response["firebase_sync"] = sync_stats
+
+    return response
+
+
+@app.post("/batch/upload")
+async def batch_upload(
+    file: UploadFile = File(...),
+    user_id: Optional[str] = Form(None),
+    sync_firebase: bool = Form(False),
+    skip_existing: bool = Form(True)
+):
+    """
+    Upload CSV file for batch analysis.
+
+    Accepts multipart/form-data file upload.
+
+    Returns:
+        Processing results with statistics
+    """
+    # Read CSV file
+    contents = await file.read()
+    csv_data = contents.decode('utf-8')
+
+    # Use the same logic as batch_analyze
+    req = BatchAnalyzeRequest(
+        csv_data=csv_data,
+        user_id=user_id,
+        sync_firebase=sync_firebase,
+        skip_existing=skip_existing
+    )
+
+    return await batch_analyze(req)
+
+
+@app.get("/batch/results")
+async def get_batch_results(
+    person: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    status: Optional[str] = None
+):
+    """
+    Query batch analysis results from SQLite.
+
+    Args:
+        person: Filter by person name
+        start_date: Filter by start date (YYYY-MM-DD)
+        end_date: Filter by end date (YYYY-MM-DD)
+        status: Filter by status (complete, error, pending)
+
+    Returns:
+        List of analysis results
+    """
+    # Apply filters
+    if person:
+        results = get_videos_by_person(person, DEFAULT_DB_PATH)
+    elif start_date and end_date:
+        results = get_date_range_results(start_date, end_date, DEFAULT_DB_PATH)
+    else:
+        results = get_all_results(DEFAULT_DB_PATH)
+
+    # Filter by status if provided
+    if status:
+        results = [r for r in results if r.get("status") == status]
+
+    return {
+        "total": len(results),
+        "results": results
+    }
+
+
+@app.get("/batch/people")
+async def get_people():
+    """
+    Get list of all people with their video counts.
+
+    Returns:
+        List of people with statistics
+    """
+    stats = get_sentiment_statistics(DEFAULT_DB_PATH)
+
+    people = []
+    for name, data in stats.get("by_person", {}).items():
+        summary = get_person_summary(name, DEFAULT_DB_PATH)
+        people.append({
+            "name": name,
+            "video_count": data["count"],
+            "sentiment_distribution": data["sentiment"],
+            "date_range": {
+                "earliest": summary.get("earliest_date"),
+                "latest": summary.get("latest_date")
+            },
+            "status": {
+                "completed": summary.get("completed", 0),
+                "errors": summary.get("errors", 0)
+            }
+        })
+
+    return {
+        "total_people": len(people),
+        "people": sorted(people, key=lambda x: x["video_count"], reverse=True)
+    }
+
+
+@app.get("/batch/statistics")
+async def get_batch_statistics():
+    """
+    Get overall batch processing statistics.
+
+    Returns:
+        Statistics including sentiment distribution
+    """
+    return get_sentiment_statistics(DEFAULT_DB_PATH)

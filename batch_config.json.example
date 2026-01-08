@@ -1,0 +1,8 @@
+{
+  "input_file": "videos.csv",
+  "user_id": "your-firebase-user-id",
+  "db_path": "batch_results.db",
+  "export_json": null,
+  "export_csv": null,
+  "sync_firebase": false
+}

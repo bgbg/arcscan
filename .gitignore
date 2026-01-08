@@ -12,3 +12,12 @@ node_modules/
 !.claude/commands/
 
 results/
+
+# Batch processing
+batch_results.db
+batch_analyze.log
+batch_config.json
+todo__*.md
+batch_data/
+tmp.*
+*.bak.*
