@@ -530,19 +530,50 @@ def get_all_results(db_path: str = DEFAULT_DB_PATH) -> List[Dict[str, Any]]:
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
 
+    # Check which schema we're using
     cursor.execute("""
-        SELECT url, date, person_name, title, transcription,
-               language, analysis_json, created_at, updated_at,
-               status, error_message
-        FROM videos
-        ORDER BY date DESC
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='video_metadata'
     """)
+    use_new_schema = cursor.fetchone() is not None
+
+    if use_new_schema:
+        # Use V2 schema with JOIN
+        cursor.execute("""
+            SELECT
+                v.url,
+                v.date,
+                v.person_name,
+                v.title,
+                v.created_at,
+                v.updated_at,
+                v.status,
+                v.error_message,
+                t.text as transcription,
+                t.language,
+                v.analysis_json
+            FROM video_metadata v
+            LEFT JOIN transcriptions t ON v.url = t.video_url
+                AND t.id = (
+                    SELECT MAX(id) FROM transcriptions WHERE video_url = v.url
+                )
+            ORDER BY v.date DESC
+        """)
+    else:
+        # Use legacy schema
+        cursor.execute("""
+            SELECT url, date, person_name, title, transcription,
+                   language, analysis_json, created_at, updated_at,
+                   status, error_message
+            FROM videos
+            ORDER BY date DESC
+        """)
 
     results = []
     for row in cursor.fetchall():
         result = dict(row)
-        # Parse JSON analysis data
-        if result["analysis_json"]:
+        # Parse JSON analysis data if present
+        if result.get("analysis_json"):
             result["analysis"] = json.loads(result["analysis_json"])
         results.append(result)
 
@@ -567,19 +598,51 @@ def get_videos_by_person(
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
 
+    # Check which schema we're using
     cursor.execute("""
-        SELECT url, date, person_name, title, transcription,
-               language, analysis_json, created_at, updated_at,
-               status, error_message
-        FROM videos
-        WHERE person_name = ?
-        ORDER BY date DESC
-    """, (person_name,))
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='video_metadata'
+    """)
+    use_new_schema = cursor.fetchone() is not None
+
+    if use_new_schema:
+        # Use V2 schema with JOIN
+        cursor.execute("""
+            SELECT
+                v.url,
+                v.date,
+                v.person_name,
+                v.title,
+                v.created_at,
+                v.updated_at,
+                v.status,
+                v.error_message,
+                t.text as transcription,
+                t.language,
+                v.analysis_json
+            FROM video_metadata v
+            LEFT JOIN transcriptions t ON v.url = t.video_url
+                AND t.id = (
+                    SELECT MAX(id) FROM transcriptions WHERE video_url = v.url
+                )
+            WHERE v.person_name = ?
+            ORDER BY v.date DESC
+        """, (person_name,))
+    else:
+        # Use legacy schema
+        cursor.execute("""
+            SELECT url, date, person_name, title, transcription,
+                   language, analysis_json, created_at, updated_at,
+                   status, error_message
+            FROM videos
+            WHERE person_name = ?
+            ORDER BY date DESC
+        """, (person_name,))
 
     results = []
     for row in cursor.fetchall():
         result = dict(row)
-        if result["analysis_json"]:
+        if result.get("analysis_json"):
             result["analysis"] = json.loads(result["analysis_json"])
         results.append(result)
 
@@ -604,14 +667,26 @@ def get_person_summary(
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
 
+    # Check which schema we're using
     cursor.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='video_metadata'
+    """)
+    use_new_schema = cursor.fetchone() is not None
+
+    if use_new_schema:
+        table_name = "video_metadata"
+    else:
+        table_name = "videos"
+
+    cursor.execute(f"""
         SELECT
             COUNT(*) as total_videos,
             MIN(date) as earliest_date,
             MAX(date) as latest_date,
             SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) as completed,
             SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors
-        FROM videos
+        FROM {table_name}
         WHERE person_name = ?
     """, (person_name,))
 
@@ -642,19 +717,51 @@ def get_date_range_results(
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
 
+    # Check which schema we're using
     cursor.execute("""
-        SELECT url, date, person_name, title, transcription,
-               language, analysis_json, created_at, updated_at,
-               status, error_message
-        FROM videos
-        WHERE date BETWEEN ? AND ?
-        ORDER BY date DESC
-    """, (start_date, end_date))
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='video_metadata'
+    """)
+    use_new_schema = cursor.fetchone() is not None
+
+    if use_new_schema:
+        # Use V2 schema with JOIN
+        cursor.execute("""
+            SELECT
+                v.url,
+                v.date,
+                v.person_name,
+                v.title,
+                v.created_at,
+                v.updated_at,
+                v.status,
+                v.error_message,
+                t.text as transcription,
+                t.language,
+                v.analysis_json
+            FROM video_metadata v
+            LEFT JOIN transcriptions t ON v.url = t.video_url
+                AND t.id = (
+                    SELECT MAX(id) FROM transcriptions WHERE video_url = v.url
+                )
+            WHERE v.date BETWEEN ? AND ?
+            ORDER BY v.date DESC
+        """, (start_date, end_date))
+    else:
+        # Use legacy schema
+        cursor.execute("""
+            SELECT url, date, person_name, title, transcription,
+                   language, analysis_json, created_at, updated_at,
+                   status, error_message
+            FROM videos
+            WHERE date BETWEEN ? AND ?
+            ORDER BY date DESC
+        """, (start_date, end_date))
 
     results = []
     for row in cursor.fetchall():
         result = dict(row)
-        if result["analysis_json"]:
+        if result.get("analysis_json"):
             result["analysis"] = json.loads(result["analysis_json"])
         results.append(result)
 
@@ -666,6 +773,9 @@ def get_sentiment_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
     """
     Get overall sentiment statistics across all videos.
 
+    Uses video_sentiments table if available (V2 schema), falls back to
+    parsing analysis_json for legacy schema.
+
     Args:
         db_path: Path to the database file
 
@@ -675,11 +785,12 @@ def get_sentiment_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
 
+    # Check which schema we're using
     cursor.execute("""
-        SELECT person_name, analysis_json, status
-        FROM videos
-        WHERE status = 'complete'
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='video_sentiments'
     """)
+    use_new_schema = cursor.fetchone() is not None
 
     stats = {
         "total_videos": 0,
@@ -687,32 +798,380 @@ def get_sentiment_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
         "overall_sentiment": {"positive": 0, "neutral": 0, "negative": 0}
     }
 
-    for row in cursor.fetchall():
-        stats["total_videos"] += 1
-        person = row["person_name"]
+    if use_new_schema:
+        # Use V2 schema - query video_sentiments table directly
+        cursor.execute("""
+            SELECT
+                v.person_name,
+                s.overall_sentiment,
+                s.positive_count,
+                s.neutral_count,
+                s.negative_count
+            FROM video_metadata v
+            INNER JOIN video_sentiments s ON v.url = s.video_url
+            WHERE v.status = 'complete'
+        """)
 
-        if person not in stats["by_person"]:
-            stats["by_person"][person] = {
-                "count": 0,
-                "sentiment": {"positive": 0, "neutral": 0, "negative": 0}
-            }
+        for row in cursor.fetchall():
+            stats["total_videos"] += 1
+            person = row["person_name"]
+            overall = row["overall_sentiment"].lower()
 
-        stats["by_person"][person]["count"] += 1
+            if person not in stats["by_person"]:
+                stats["by_person"][person] = {
+                    "count": 0,
+                    "sentiment": {"positive": 0, "neutral": 0, "negative": 0}
+                }
 
-        # Parse analysis JSON and extract sentiment
-        if row["analysis_json"]:
-            try:
-                analysis = json.loads(row["analysis_json"])
-                overall_sentiment = analysis.get("overall_sentiment", "").lower()
+            stats["by_person"][person]["count"] += 1
 
-                if overall_sentiment in ["positive", "neutral", "negative"]:
-                    stats["overall_sentiment"][overall_sentiment] += 1
-                    stats["by_person"][person]["sentiment"][overall_sentiment] += 1
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.warning(f"Error parsing analysis JSON: {e}")
+            # Increment sentiment counts
+            if overall in ["positive", "neutral", "negative"]:
+                stats["overall_sentiment"][overall] += 1
+                stats["by_person"][person]["sentiment"][overall] += 1
+
+    else:
+        # Fallback to legacy schema - parse analysis_json
+        cursor.execute("""
+            SELECT person_name, analysis_json, status
+            FROM videos
+            WHERE status = 'complete'
+        """)
+
+        for row in cursor.fetchall():
+            stats["total_videos"] += 1
+            person = row["person_name"]
+
+            if person not in stats["by_person"]:
+                stats["by_person"][person] = {
+                    "count": 0,
+                    "sentiment": {"positive": 0, "neutral": 0, "negative": 0}
+                }
+
+            stats["by_person"][person]["count"] += 1
+
+            # Parse analysis JSON and extract sentiment
+            if row["analysis_json"]:
+                try:
+                    analysis = json.loads(row["analysis_json"])
+                    overall_sentiment = analysis.get("overall_sentiment", "").lower()
+
+                    if overall_sentiment in ["positive", "neutral", "negative"]:
+                        stats["overall_sentiment"][overall_sentiment] += 1
+                        stats["by_person"][person]["sentiment"][overall_sentiment] += 1
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.warning(f"Error parsing analysis JSON: {e}")
 
     conn.close()
     return stats
+
+
+def get_video_timeline(
+    video_url: str,
+    bucket_size: float = 30.0,
+    db_path: str = DEFAULT_DB_PATH
+) -> List[Dict[str, Any]]:
+    """
+    Get sentiment timeline for a video aggregated into time buckets.
+
+    Aggregates sentence-level sentiment data from the sentences table into
+    time buckets on read (flexible granularity).
+
+    Args:
+        video_url: Video URL
+        bucket_size: Time bucket size in seconds (default: 30.0)
+        db_path: Path to the database file
+
+    Returns:
+        List of timeline buckets with sentiment distribution
+    """
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+
+    # Check which schema we're using
+    cursor.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='sentences'
+    """)
+    use_new_schema = cursor.fetchone() is not None
+
+    if not use_new_schema:
+        # Fallback: parse timeline from analysis_json
+        cursor.execute(
+            "SELECT analysis_json FROM videos WHERE url = ?",
+            (video_url,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if row and row["analysis_json"]:
+            try:
+                analysis = json.loads(row["analysis_json"])
+                return analysis.get("timeline_data", [])
+            except json.JSONDecodeError:
+                return []
+        return []
+
+    # V2 schema: aggregate from sentences table
+    cursor.execute("""
+        SELECT
+            start_time,
+            end_time,
+            sentiment
+        FROM sentences
+        WHERE video_url = ?
+        ORDER BY start_time ASC
+    """, (video_url,))
+
+    sentences = cursor.fetchall()
+    conn.close()
+
+    if not sentences:
+        return []
+
+    # Determine video duration
+    max_time = max(s["end_time"] for s in sentences)
+
+    # Create time buckets
+    timeline = []
+    current_time = 0.0
+
+    while current_time < max_time:
+        bucket_end = current_time + bucket_size
+        bucket = {
+            "start": current_time,
+            "end": bucket_end,
+            "positive": 0,
+            "neutral": 0,
+            "negative": 0,
+            "total": 0
+        }
+
+        # Count sentences in this bucket
+        for sentence in sentences:
+            # Sentence overlaps with bucket if its start is within bucket range
+            if current_time <= sentence["start_time"] < bucket_end:
+                sentiment = sentence["sentiment"].lower()
+                if sentiment in ["positive", "neutral", "negative"]:
+                    bucket[sentiment] += 1
+                    bucket["total"] += 1
+
+        # Calculate percentages
+        if bucket["total"] > 0:
+            bucket["positive_pct"] = (bucket["positive"] / bucket["total"]) * 100
+            bucket["neutral_pct"] = (bucket["neutral"] / bucket["total"]) * 100
+            bucket["negative_pct"] = (bucket["negative"] / bucket["total"]) * 100
+        else:
+            bucket["positive_pct"] = 0.0
+            bucket["neutral_pct"] = 0.0
+            bucket["negative_pct"] = 0.0
+
+        timeline.append(bucket)
+        current_time = bucket_end
+
+    return timeline
+
+
+def get_person_sentiment_trends(
+    person_name: str,
+    db_path: str = DEFAULT_DB_PATH
+) -> List[Dict[str, Any]]:
+    """
+    Get sentiment trends over time for a specific person.
+
+    Returns time-series data showing how sentiment changes across their videos.
+
+    Args:
+        person_name: Name of the person
+        db_path: Path to the database file
+
+    Returns:
+        List of sentiment data points sorted by date
+    """
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+
+    # Check which schema we're using
+    cursor.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='video_sentiments'
+    """)
+    use_new_schema = cursor.fetchone() is not None
+
+    if use_new_schema:
+        # Use V2 schema
+        cursor.execute("""
+            SELECT
+                v.url,
+                v.date,
+                v.title,
+                s.overall_sentiment,
+                s.positive_pct,
+                s.neutral_pct,
+                s.negative_pct
+            FROM video_metadata v
+            INNER JOIN video_sentiments s ON v.url = s.video_url
+            WHERE v.person_name = ? AND v.status = 'complete'
+            ORDER BY v.date ASC
+        """, (person_name,))
+    else:
+        # Fallback to legacy schema
+        cursor.execute("""
+            SELECT url, date, title, analysis_json
+            FROM videos
+            WHERE person_name = ? AND status = 'complete'
+            ORDER BY date ASC
+        """, (person_name,))
+
+    trends = []
+    for row in cursor.fetchall():
+        if use_new_schema:
+            trends.append({
+                "url": row["url"],
+                "date": row["date"],
+                "title": row["title"],
+                "overall_sentiment": row["overall_sentiment"],
+                "positive_pct": row["positive_pct"],
+                "neutral_pct": row["neutral_pct"],
+                "negative_pct": row["negative_pct"]
+            })
+        else:
+            # Parse from analysis_json
+            if row["analysis_json"]:
+                try:
+                    analysis = json.loads(row["analysis_json"])
+                    summary = analysis.get("summary", {})
+                    overall = analysis.get("overall_sentiment", "neutral")
+
+                    positive = summary.get("positive", 0)
+                    neutral = summary.get("neutral", 0)
+                    negative = summary.get("negative", 0)
+                    total = positive + neutral + negative
+
+                    if total > 0:
+                        pos_pct = (positive / total) * 100
+                        neu_pct = (neutral / total) * 100
+                        neg_pct = (negative / total) * 100
+                    else:
+                        pos_pct = neu_pct = neg_pct = 0.0
+
+                    trends.append({
+                        "url": row["url"],
+                        "date": row["date"],
+                        "title": row["title"],
+                        "overall_sentiment": overall,
+                        "positive_pct": pos_pct,
+                        "neutral_pct": neu_pct,
+                        "negative_pct": neg_pct
+                    })
+                except json.JSONDecodeError:
+                    continue
+
+    conn.close()
+    return trends
+
+
+def get_emotion_breakdown(
+    video_url: str,
+    db_path: str = DEFAULT_DB_PATH
+) -> Dict[str, Any]:
+    """
+    Get emotion analysis breakdown for a video.
+
+    Returns both sentence-level emotions and video-level emotion summary.
+
+    Args:
+        video_url: Video URL
+        db_path: Path to the database file
+
+    Returns:
+        Dictionary with sentence_emotions and video_summary
+    """
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+
+    # Check which schema we're using
+    cursor.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='sentence_emotions'
+    """)
+    use_new_schema = cursor.fetchone() is not None
+
+    result = {
+        "sentence_emotions": [],
+        "video_summary": {}
+    }
+
+    if not use_new_schema:
+        # Fallback: parse from analysis_json
+        cursor.execute(
+            "SELECT analysis_json FROM videos WHERE url = ?",
+            (video_url,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if row and row["analysis_json"]:
+            try:
+                analysis = json.loads(row["analysis_json"])
+                # Extract emotion data if available
+                sentences = analysis.get("sentences", [])
+                for sentence in sentences:
+                    if "emotions" in sentence:
+                        result["sentence_emotions"].append({
+                            "text": sentence.get("text", ""),
+                            "emotions": sentence["emotions"]
+                        })
+            except json.JSONDecodeError:
+                pass
+
+        return result
+
+    # V2 schema: query emotion tables
+    # Get sentence-level emotions
+    cursor.execute("""
+        SELECT
+            s.sentence_index,
+            s.text,
+            se.emotion_name,
+            se.score
+        FROM sentences s
+        INNER JOIN sentence_emotions se ON s.id = se.sentence_id
+        WHERE s.video_url = ?
+        ORDER BY s.sentence_index, se.score DESC
+    """, (video_url,))
+
+    # Group by sentence
+    sentences_dict = {}
+    for row in cursor.fetchall():
+        idx = row["sentence_index"]
+        if idx not in sentences_dict:
+            sentences_dict[idx] = {
+                "index": idx,
+                "text": row["text"],
+                "emotions": {}
+            }
+        sentences_dict[idx]["emotions"][row["emotion_name"]] = row["score"]
+
+    result["sentence_emotions"] = [sentences_dict[i] for i in sorted(sentences_dict.keys())]
+
+    # Get video-level emotion summary
+    cursor.execute("""
+        SELECT *
+        FROM video_emotion_summary
+        WHERE video_url = ?
+    """, (video_url,))
+
+    row = cursor.fetchone()
+    if row:
+        # Convert to dict and remove metadata columns
+        summary = dict(row)
+        summary.pop("video_url", None)
+        summary.pop("created_at", None)
+        result["video_summary"] = summary
+
+    conn.close()
+    return result
 
 
 def generate_text_report(db_path: str = DEFAULT_DB_PATH) -> str:
