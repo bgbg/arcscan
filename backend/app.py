@@ -35,13 +35,19 @@ load_dotenv()
 # Initialize OpenAI client (>=1.0)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Optional: Setup LangSmith tracing if API key is configured
-if os.getenv("LANGSMITH_API_KEY"):
+# Setup LangSmith tracing - REQUIRED
+if not os.getenv("LANGSMITH_API_KEY"):
+    raise RuntimeError("LANGSMITH_API_KEY environment variable is required but not set")
+
+if os.getenv("LANGSMITH_TRACING", "false").lower() == "true":
     from langsmith.wrappers import wrap_openai
-    try:
-        client = wrap_openai(client)
-    except Exception as e:
-        print(f"Warning: LangSmith wrapping failed: {e}. Continuing without tracing.")
+    # Set project name if specified, otherwise use default
+    project_name = os.getenv("LANGSMITH_PROJECT", "arcscan")
+    os.environ["LANGSMITH_PROJECT"] = project_name
+    client = wrap_openai(client)
+    print(f"✓ LangSmith tracing enabled for project: {project_name}")
+else:
+    print("⚠ LangSmith tracing is disabled (LANGSMITH_TRACING=false)")
 
 # Initialize Firebase (optional - only needed for web API, not batch processing)
 db = None

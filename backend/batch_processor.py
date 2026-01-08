@@ -10,6 +10,27 @@ import sys
 import logging
 from typing import List, Tuple, Dict, Any, Optional, Callable
 from datetime import datetime
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# Load environment variables
+load_dotenv()
+
+# Initialize OpenAI client with LangSmith tracing
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Setup LangSmith tracing - REQUIRED
+if not os.getenv("LANGSMITH_API_KEY"):
+    raise RuntimeError("LANGSMITH_API_KEY environment variable is required but not set")
+
+if os.getenv("LANGSMITH_TRACING", "false").lower() == "true":
+    from langsmith.wrappers import wrap_openai
+    project_name = os.getenv("LANGSMITH_PROJECT", "arcscan")
+    os.environ["LANGSMITH_PROJECT"] = project_name
+    openai_client = wrap_openai(openai_client)
+    print(f"✓ LangSmith tracing enabled for project: {project_name}")
+else:
+    print("⚠ LangSmith tracing is disabled (LANGSMITH_TRACING=false)")
 
 # Import database functions
 try:
@@ -155,10 +176,7 @@ def process_single_video(
                 if detected_lang not in ['en', 'unknown']:
                     logger.info(f"Translating subtitles from {detected_lang} to English...")
                     try:
-                        from openai import OpenAI
-                        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-                        
-                        translation_response = client.chat.completions.create(
+                        translation_response = openai_client.chat.completions.create(
                             model="gpt-3.5-turbo",
                             messages=[
                                 {"role": "system", "content": "Translate to English. Output only translated text."},
