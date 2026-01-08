@@ -994,6 +994,9 @@ try:
         get_person_summary,
         get_date_range_results,
         get_sentiment_statistics,
+        get_video_timeline,
+        get_person_sentiment_trends,
+        get_emotion_breakdown,
         DEFAULT_DB_PATH
     )
 except ImportError:
@@ -1005,6 +1008,9 @@ except ImportError:
         get_person_summary,
         get_date_range_results,
         get_sentiment_statistics,
+        get_video_timeline,
+        get_person_sentiment_trends,
+        get_emotion_breakdown,
         DEFAULT_DB_PATH
     )
 
@@ -1171,3 +1177,69 @@ async def get_batch_statistics():
         Statistics including sentiment distribution
     """
     return get_sentiment_statistics(DEFAULT_DB_PATH)
+
+
+@app.get("/batch/video/{video_url:path}/timeline")
+async def get_video_timeline_endpoint(
+    video_url: str,
+    bucket_size: float = 30.0
+):
+    """
+    Get sentiment timeline for a video.
+
+    Aggregates sentence-level sentiment into time buckets for visualization.
+
+    Args:
+        video_url: Video URL (path parameter)
+        bucket_size: Time bucket size in seconds (default: 30.0)
+
+    Returns:
+        List of timeline buckets with sentiment distribution
+    """
+    timeline = get_video_timeline(video_url, bucket_size, DEFAULT_DB_PATH)
+    return {
+        "video_url": video_url,
+        "bucket_size": bucket_size,
+        "timeline": timeline
+    }
+
+
+@app.get("/batch/person/{name}/trends")
+async def get_person_trends_endpoint(name: str):
+    """
+    Get sentiment trends over time for a specific person.
+
+    Returns time-series data showing sentiment evolution across their videos.
+
+    Args:
+        name: Person name (path parameter)
+
+    Returns:
+        List of sentiment data points sorted by date
+    """
+    trends = get_person_sentiment_trends(name, DEFAULT_DB_PATH)
+    return {
+        "person_name": name,
+        "total_videos": len(trends),
+        "trends": trends
+    }
+
+
+@app.get("/batch/video/{video_url:path}/emotions")
+async def get_video_emotions_endpoint(video_url: str):
+    """
+    Get emotion analysis breakdown for a video.
+
+    Returns both sentence-level and video-level emotion data.
+
+    Args:
+        video_url: Video URL (path parameter)
+
+    Returns:
+        Dictionary with sentence_emotions and video_summary
+    """
+    emotions = get_emotion_breakdown(video_url, DEFAULT_DB_PATH)
+    return {
+        "video_url": video_url,
+        **emotions
+    }
