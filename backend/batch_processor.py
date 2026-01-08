@@ -48,6 +48,7 @@ def _import_app_functions():
         from .app import (
             download_youtube_audio,
             download_youtube_subtitles,
+            get_youtube_metadata,
             validate_and_process_subtitles,
             transcribe_audio,
             extract_sentences_with_timestamps,
@@ -61,6 +62,7 @@ def _import_app_functions():
         from app import (
             download_youtube_audio,
             download_youtube_subtitles,
+            get_youtube_metadata,
             validate_and_process_subtitles,
             transcribe_audio,
             extract_sentences_with_timestamps,
@@ -74,6 +76,7 @@ def _import_app_functions():
     return {
         'download_youtube_audio': download_youtube_audio,
         'download_youtube_subtitles': download_youtube_subtitles,
+        'get_youtube_metadata': get_youtube_metadata,
         'validate_and_process_subtitles': validate_and_process_subtitles,
         'transcribe_audio': transcribe_audio,
         'extract_sentences_with_timestamps': extract_sentences_with_timestamps,
@@ -138,6 +141,7 @@ def process_single_video(
     funcs = _import_app_functions()
     download_youtube_audio = funcs['download_youtube_audio']
     download_youtube_subtitles = funcs['download_youtube_subtitles']
+    get_youtube_metadata = funcs['get_youtube_metadata']
     validate_and_process_subtitles = funcs['validate_and_process_subtitles']
     transcribe_audio = funcs['transcribe_audio']
     extract_sentences_with_timestamps = funcs['extract_sentences_with_timestamps']
@@ -147,6 +151,18 @@ def process_single_video(
 
     try:
         logger.info(f"Processing video: {url}")
+
+        # Extract metadata early (title and duration)
+        metadata = get_youtube_metadata(url)
+        video_title = None
+        video_duration = None
+
+        if metadata:
+            video_title = metadata.get('title')
+            video_duration = metadata.get('duration')
+            logger.info(f"✓ Extracted metadata: title='{video_title}', duration={video_duration}s")
+        else:
+            logger.warning(f"Failed to extract metadata for {url}")
 
         whisper_response = None
         decision_log = []
@@ -261,7 +277,8 @@ def process_single_video(
             person_name=person_name,
             data=result_data,
             date=date,
-            title=None,  # We could extract from YouTube metadata if needed
+            title=video_title,
+            duration=video_duration,
             status="complete",
             db_path=db_path
         )
@@ -280,6 +297,8 @@ def process_single_video(
                 person_name=person_name,
                 data={},
                 date=date,
+                title=video_title,
+                duration=video_duration,
                 status="error",
                 error_message=error_msg,
                 db_path=db_path

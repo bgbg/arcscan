@@ -167,6 +167,46 @@ def download_youtube_audio(youtube_url, output_dir="downloads"):
         raise HTTPException(status_code=500, detail=f"Download error: {e}")
 
 
+def get_youtube_metadata(youtube_url):
+    """
+    Extract metadata from YouTube video (title and duration).
+
+    Args:
+        youtube_url: YouTube video URL
+
+    Returns:
+        dict with 'title' (str) and 'duration' (int seconds), or None if extraction fails
+    """
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,  # Don't download video
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(youtube_url, download=False)
+
+            if not info:
+                return None
+
+            title = info.get('title', '')
+            duration = info.get('duration', 0)  # Duration in seconds
+
+            # Fallback to URL if title is empty
+            if not title:
+                title = youtube_url
+
+            return {
+                'title': title,
+                'duration': int(duration) if duration else 0
+            }
+
+    except Exception as e:
+        print(f"Warning: Failed to extract metadata from {youtube_url}: {e}")
+        return None
+
+
 def download_youtube_subtitles(youtube_url, output_dir="downloads"):
     """
     Try to download YouTube subtitles if available.

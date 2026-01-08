@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS video_metadata (
     date TEXT,                  -- Video date from CSV input
     person_name TEXT NOT NULL,  -- Person appearing in the video
     title TEXT,                 -- Video title (from YouTube metadata)
+    duration INTEGER,           -- Video duration in seconds
     created_at TEXT NOT NULL,   -- When record was first created
     updated_at TEXT NOT NULL,   -- When record was last updated
     status TEXT NOT NULL,       -- 'pending', 'processing', 'complete', 'error'
