@@ -186,11 +186,11 @@ npm run lint            # Run ESLint
 ### Backend (FastAPI)
 
 ```bash
-# Install dependencies (no requirements.txt found - manually install):
-pip install fastapi uvicorn python-dotenv openai yt-dlp transformers firebase-admin langdetect
+# Install dependencies:
+cd backend
+pip install -r requirements.txt
 
 # Run backend server:
-cd backend
 uvicorn app:app --reload --port 8000
 # Backend runs on http://localhost:8000
 ```
@@ -208,10 +208,27 @@ NEXT_PUBLIC_FIREBASE_APP_ID=...
 BACKEND_URL=http://localhost:8000
 ```
 
-Create `.env` in `/backend`:
+Create `.env` in `/backend` (see `.env.example` for template):
 ```
 OPENAI_API_KEY=...
+LANGSMITH_API_KEY=...
+LANGSMITH_PROJECT=arcscan
+LANGSMITH_TRACING=true
 ```
+
+**LangSmith Configuration**:
+- `LANGSMITH_API_KEY` - **Required**. API key for LangSmith tracing (get from [LangSmith dashboard](https://smith.langchain.com)). Application will fail to start if missing. This requirement is intentional to ensure all LLM API calls are traced for monitoring and cost tracking.
+- `LANGSMITH_PROJECT` - Project name for organizing traces (default: `arcscan`)
+- `LANGSMITH_TRACING` - Enable/disable tracing (`true`/`false`, default: `false`)
+
+LangSmith automatically traces all OpenAI API calls (Whisper transcriptions and GPT-3.5-turbo translations), capturing:
+- Model names and parameters
+- Token usage and costs
+- Request/response latency
+- Input/output content
+- Error details
+
+View traces at [https://smith.langchain.com](https://smith.langchain.com)
 
 Backend also requires `firebase_credentials.json` in `/backend`.
 

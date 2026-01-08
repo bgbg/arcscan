@@ -32,16 +32,9 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 # Load environment variables
 load_dotenv()
 
-# Initialize OpenAI client (>=1.0)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# Optional: Setup LangSmith tracing if API key is configured
-if os.getenv("LANGSMITH_API_KEY"):
-    from langsmith.wrappers import wrap_openai
-    try:
-        client = wrap_openai(client)
-    except Exception as e:
-        print(f"Warning: LangSmith wrapping failed: {e}. Continuing without tracing.")
+# Initialize OpenAI client with LangSmith tracing
+from langsmith_setup import setup_openai_client
+client = setup_openai_client()
 
 # Initialize Firebase (optional - only needed for web API, not batch processing)
 db = None

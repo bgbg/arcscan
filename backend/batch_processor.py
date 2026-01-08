@@ -10,6 +10,18 @@ import sys
 import logging
 from typing import List, Tuple, Dict, Any, Optional, Callable
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Initialize OpenAI client with LangSmith tracing
+try:
+    from .langsmith_setup import setup_openai_client
+except ImportError:
+    from langsmith_setup import setup_openai_client
+
+openai_client = setup_openai_client()
 
 # Import database functions
 try:
@@ -155,10 +167,7 @@ def process_single_video(
                 if detected_lang not in ['en', 'unknown']:
                     logger.info(f"Translating subtitles from {detected_lang} to English...")
                     try:
-                        from openai import OpenAI
-                        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-                        
-                        translation_response = client.chat.completions.create(
+                        translation_response = openai_client.chat.completions.create(
                             model="gpt-3.5-turbo",
                             messages=[
                                 {"role": "system", "content": "Translate to English. Output only translated text."},
