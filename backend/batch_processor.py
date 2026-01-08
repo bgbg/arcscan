@@ -11,26 +11,17 @@ import logging
 from typing import List, Tuple, Dict, Any, Optional, Callable
 from datetime import datetime
 from dotenv import load_dotenv
-from openai import OpenAI
 
 # Load environment variables
 load_dotenv()
 
 # Initialize OpenAI client with LangSmith tracing
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+try:
+    from .langsmith_setup import setup_openai_client
+except ImportError:
+    from langsmith_setup import setup_openai_client
 
-# Setup LangSmith tracing - REQUIRED
-if not os.getenv("LANGSMITH_API_KEY"):
-    raise RuntimeError("LANGSMITH_API_KEY environment variable is required but not set")
-
-if os.getenv("LANGSMITH_TRACING", "false").lower() == "true":
-    from langsmith.wrappers import wrap_openai
-    project_name = os.getenv("LANGSMITH_PROJECT", "arcscan")
-    os.environ["LANGSMITH_PROJECT"] = project_name
-    openai_client = wrap_openai(openai_client)
-    print(f"✓ LangSmith tracing enabled for project: {project_name}")
-else:
-    print("⚠ LangSmith tracing is disabled (LANGSMITH_TRACING=false)")
+openai_client = setup_openai_client()
 
 # Import database functions
 try:

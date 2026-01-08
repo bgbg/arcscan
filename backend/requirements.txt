@@ -1,0 +1,22 @@
+# Web Framework
+fastapi>=0.121.0
+uvicorn>=0.38.0
+pydantic>=2.12.5
+python-multipart>=0.0.9
+
+# OpenAI & LLM Tracing
+openai>=1.0.0
+langsmith>=0.4.56
+
+# ML & NLP
+transformers>=4.51.0
+torch>=2.7.0
+sentence-transformers>=4.1.0
+
+# Utilities
+python-dotenv>=1.2.0
+langdetect>=1.0.9
+yt-dlp>=2025.5.0
+
+# Database (if using Firebase - install separately)
+# firebase-admin>=6.0.0

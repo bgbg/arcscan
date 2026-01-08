@@ -32,22 +32,9 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 # Load environment variables
 load_dotenv()
 
-# Initialize OpenAI client (>=1.0)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# Setup LangSmith tracing - REQUIRED
-if not os.getenv("LANGSMITH_API_KEY"):
-    raise RuntimeError("LANGSMITH_API_KEY environment variable is required but not set")
-
-if os.getenv("LANGSMITH_TRACING", "false").lower() == "true":
-    from langsmith.wrappers import wrap_openai
-    # Set project name if specified, otherwise use default
-    project_name = os.getenv("LANGSMITH_PROJECT", "arcscan")
-    os.environ["LANGSMITH_PROJECT"] = project_name
-    client = wrap_openai(client)
-    print(f"✓ LangSmith tracing enabled for project: {project_name}")
-else:
-    print("⚠ LangSmith tracing is disabled (LANGSMITH_TRACING=false)")
+# Initialize OpenAI client with LangSmith tracing
+from langsmith_setup import setup_openai_client
+client = setup_openai_client()
 
 # Initialize Firebase (optional - only needed for web API, not batch processing)
 db = None
