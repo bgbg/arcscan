@@ -325,6 +325,7 @@ def save_video_analysis(
     data: Dict[str, Any],
     date: Optional[str] = None,
     title: Optional[str] = None,
+    duration: Optional[int] = None,
     status: str = "complete",
     error_message: Optional[str] = None,
     db_path: str = DEFAULT_DB_PATH
@@ -341,6 +342,7 @@ def save_video_analysis(
         data: Complete analysis results dictionary
         date: Video date (from CSV)
         title: Video title
+        duration: Video duration in seconds
         status: Processing status (pending, processing, complete, error)
         error_message: Error message if status is error
         db_path: Path to the database file
@@ -376,6 +378,7 @@ def save_video_analysis(
                     UPDATE video_metadata
                     SET person_name = ?,
                         title = ?,
+                        duration = ?,
                         updated_at = ?,
                         status = ?,
                         error_message = ?,
@@ -385,6 +388,7 @@ def save_video_analysis(
                 """, (
                     person_name,
                     title,
+                    duration,
                     now,
                     status,
                     error_message,
@@ -412,11 +416,11 @@ def save_video_analysis(
                 # Insert new record into video_metadata
                 cursor.execute("""
                     INSERT INTO video_metadata (
-                        url, date, person_name, title, created_at, updated_at,
+                        url, date, person_name, title, duration, created_at, updated_at,
                         status, error_message, analysis_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    url, date, person_name, title, now, now,
+                    url, date, person_name, title, duration, now, now,
                     status, error_message, analysis_json
                 ))
                 logger.info(f"Saved new video analysis for {url}")
@@ -545,6 +549,7 @@ def get_all_results(db_path: str = DEFAULT_DB_PATH) -> List[Dict[str, Any]]:
                 v.date,
                 v.person_name,
                 v.title,
+                v.duration,
                 v.created_at,
                 v.updated_at,
                 v.status,
@@ -613,6 +618,7 @@ def get_videos_by_person(
                 v.date,
                 v.person_name,
                 v.title,
+                v.duration,
                 v.created_at,
                 v.updated_at,
                 v.status,
@@ -739,6 +745,7 @@ def get_date_range_results(
                 v.date,
                 v.person_name,
                 v.title,
+                v.duration,
                 v.created_at,
                 v.updated_at,
                 v.status,

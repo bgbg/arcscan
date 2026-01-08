@@ -89,7 +89,10 @@ Located in [`/backend/batch_results.db`](backend/batch_results.db). The batch pr
 
   **Core Tables:**
   - `video_metadata` - Video information and processing status
-    - Columns: `url` (PK), `date`, `person_name`, `title`, `created_at`, `updated_at`, `status`, `error_message`, `analysis_json` (backward compatibility)
+    - Columns: `url` (PK), `date`, `person_name`, `title`, `duration` (INTEGER seconds), `created_at`, `updated_at`, `status`, `error_message`, `analysis_json` (backward compatibility)
+    - The `duration` field stores video length in seconds (INTEGER) for analytics and quality checks
+    - The `title` field is populated from YouTube metadata via yt_dlp's `extract_info()` method
+    - Both fields are extracted early in the processing pipeline using `get_youtube_metadata()` in app.py
     - Indexes: `person_name`, `date`, `status`, `(person_name, date)`
 
   - `transcriptions` - Transcription data with language detection
@@ -145,6 +148,46 @@ Located in [`/backend/batch_results.db`](backend/batch_results.db). The batch pr
   - `GET /batch/person/{name}/trends` - Sentiment trends over time for person
   - `GET /batch/video/{video_url:path}/emotions` - Emotion analysis breakdown
 
+- **Duration Metadata Migration** ([migrate_duration.py](backend/migrate_duration.py)):
+  - Adds `duration` column to `video_metadata` table
+  - Optionally clears existing data for reprocessing
+  - Usage:
+    ```bash
+    # Add duration column only
+    python backend/migrate_duration.py
+
+    # Add column and clear all data (prompts for confirmation)
+    python backend/migrate_duration.py --clear-data
+
+    # Dry run to see what would happen
+    python backend/migrate_duration.py --dry-run
+    ```
+
+- **Video Reprocessing** ([reprocess_all.py](backend/reprocess_all.py)):
+  - Reprocesses videos from CSV files to populate metadata (title, duration)
+  - Features:
+    - Resume capability via state file (survives crashes/interruptions)
+    - Exponential backoff retry logic for failed videos
+    - Rate limit handling with configurable delays
+    - Progress tracking and detailed logging
+  - Usage:
+    ```bash
+    # Process all videos from a CSV file
+    python backend/reprocess_all.py --csv batch_data/speeches.csv
+
+    # Dry run to see what would be processed
+    python backend/reprocess_all.py --csv batch_data/speeches.csv --dry-run
+
+    # Process all CSVs in a directory
+    python backend/reprocess_all.py --csv-dir batch_data/
+
+    # Resume from interrupted processing
+    python backend/reprocess_all.py --csv batch_data/speeches.csv --resume
+
+    # Custom retry and delay settings
+    python backend/reprocess_all.py --csv batch_data/speeches.csv --max-retries 5 --base-delay 3.0
+    ```
+
 - **Schema Migration** ([migrate_schema.py](backend/migrate_schema.py)):
   - Migrates from V1 (monolithic JSON) to V2 (normalized tables)
   - Features:
@@ -169,6 +212,113 @@ Located in [`/backend/batch_results.db`](backend/batch_results.db). The batch pr
   ```bash
   pytest backend/test_schema_migration.py -v
   ```
+
+### Database Query Examples
+
+The SQLite database supports rich queries using the normalized schema. Here are common query patterns:
+
+**Basic Metadata Queries:**
+```sql
+-- Get all videos with duration and title
+SELECT url, person_name, title, duration, date
+FROM video_metadata
+WHERE status = 'complete'
+ORDER BY date DESC;
+
+-- Find videos by duration range (e.g., 10-20 minutes)
+SELECT person_name, title, duration, date
+FROM video_metadata
+WHERE duration BETWEEN 600 AND 1200  -- 10-20 minutes in seconds
+ORDER BY duration DESC;
+
+-- Videos longer than 30 minutes
+SELECT person_name, title, duration/60.0 as duration_minutes, date
+FROM video_metadata
+WHERE duration > 1800
+ORDER BY duration DESC;
+
+-- Average video duration per person
+SELECT person_name,
+       COUNT(*) as video_count,
+       AVG(duration) as avg_duration_seconds,
+       AVG(duration)/60.0 as avg_duration_minutes
+FROM video_metadata
+WHERE status = 'complete' AND duration IS NOT NULL
+GROUP BY person_name
+ORDER BY avg_duration_minutes DESC;
+
+-- Quality check: videos without metadata
+SELECT url, person_name, status
+FROM video_metadata
+WHERE title IS NULL OR duration IS NULL;
+```
+
+**Sentiment Analysis Queries:**
+```sql
+-- Sentiment distribution with duration
+SELECT person_name,
+       COUNT(*) as total_videos,
+       SUM(CASE WHEN vs.overall_sentiment = 'positive' THEN 1 ELSE 0 END) as positive_count,
+       AVG(vm.duration)/60.0 as avg_duration_minutes
+FROM video_metadata vm
+JOIN video_sentiments vs ON vm.url = vs.video_url
+WHERE vm.status = 'complete'
+GROUP BY person_name;
+
+-- Videos by sentiment and duration range
+SELECT vm.person_name, vm.title, vm.duration/60.0 as minutes,
+       vs.overall_sentiment,
+       vs.positive_pct, vs.neutral_pct, vs.negative_pct
+FROM video_metadata vm
+JOIN video_sentiments vs ON vm.url = vs.video_url
+WHERE vm.duration > 600  -- Longer than 10 minutes
+ORDER BY vs.positive_pct DESC;
+```
+
+**Time-Series Analysis:**
+```sql
+-- Sentiment trends over time with duration
+SELECT vm.date, vm.person_name, vm.title,
+       vm.duration/60.0 as duration_minutes,
+       vs.overall_sentiment,
+       vs.positive_pct
+FROM video_metadata vm
+JOIN video_sentiments vs ON vm.url = vs.video_url
+WHERE vm.person_name = 'Benjamin Netanyahu'
+  AND vm.date >= '2020-01-01'
+ORDER BY vm.date;
+
+-- Monthly aggregation with average duration
+SELECT strftime('%Y-%m', date) as month,
+       person_name,
+       COUNT(*) as video_count,
+       AVG(duration)/60.0 as avg_duration_minutes
+FROM video_metadata
+WHERE status = 'complete'
+GROUP BY month, person_name
+ORDER BY month, person_name;
+```
+
+**Accessing from Python:**
+```python
+import sqlite3
+
+conn = sqlite3.connect('backend/batch_results.db')
+cursor = conn.cursor()
+
+# Get videos with duration > 15 minutes
+cursor.execute("""
+    SELECT person_name, title, duration
+    FROM video_metadata
+    WHERE duration > 900 AND status = 'complete'
+    ORDER BY duration DESC
+""")
+
+for person, title, duration in cursor.fetchall():
+    print(f"{person}: {title} ({duration//60}:{duration%60:02d})")
+
+conn.close()
+```
 
 ## Development Commands
 
