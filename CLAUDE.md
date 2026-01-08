@@ -81,6 +81,95 @@ Located in [`/backend/app.py`](backend/app.py). Key functionality:
 
 - **Caching Strategy**: Analyses are cached by video URL - if a video was already analyzed, results are returned immediately without reprocessing
 
+### SQLite Batch Database (Schema V2)
+
+Located in [`/backend/batch_results.db`](backend/batch_results.db). The batch processing system uses a normalized SQLite schema for efficient querying and time-series analysis.
+
+- **Database Schema** ([schema_v2.sql](backend/schema_v2.sql)):
+
+  **Core Tables:**
+  - `video_metadata` - Video information and processing status
+    - Columns: `url` (PK), `date`, `person_name`, `title`, `created_at`, `updated_at`, `status`, `error_message`, `analysis_json` (backward compatibility)
+    - Indexes: `person_name`, `date`, `status`, `(person_name, date)`
+
+  - `transcriptions` - Transcription data with language detection
+    - Columns: `id` (PK), `video_url` (FK), `text`, `language`, `source` (whisper/subtitles), `detected_language`, `subtitle_language`, `decision_path`, `created_at`
+    - Supports multiple transcriptions per video
+    - Indexes: `video_url`, `language`, `source`
+
+  - `translations` - Translation metadata for non-English content
+    - Columns: `id` (PK), `transcription_id` (FK), `original_text`, `translated_text`, `model`, `created_at`
+
+  - `sentences` - Sentence-level data with timestamps and sentiment
+    - Columns: `id` (PK), `video_url` (FK), `sentence_index`, `text`, `start_time`, `end_time`, `sentiment`, `created_at`
+    - Enables timeline aggregation at any granularity
+    - Indexes: `video_url`, `sentiment`, `start_time`, `end_time`, `(video_url, start_time, end_time)`
+
+  - `video_sentiments` - Aggregated sentiment statistics per video
+    - Columns: `video_url` (PK FK), `overall_sentiment`, `positive_count`, `positive_pct`, `neutral_count`, `neutral_pct`, `negative_count`, `negative_pct`, `created_at`
+
+  - `sentence_emotions` - Emotion analysis at sentence level (GoEmotions model)
+    - Columns: `id` (PK), `sentence_id` (FK), `emotion_name`, `score`, `created_at`
+    - Supports 28 emotions based on Plutchik's wheel
+
+  - `video_emotion_summary` - Aggregated emotion statistics per video
+    - 28 emotion columns (joy, sadness, anger, fear, surprise, disgust, etc.) with average scores
+
+- **Batch Processing** ([batch_processor.py](backend/batch_processor.py)):
+  - `process_single_video()` - Process individual videos
+  - `process_video_batch()` - Batch process multiple videos from CSV
+  - `sync_to_firebase()` - Sync SQLite results to Firebase Firestore
+  - All analysis results are persisted to database (output files are exports only)
+
+- **Database Operations** ([batch_db.py](backend/batch_db.py)):
+  - **Write functions:**
+    - `save_video_analysis()` - Save complete analysis to normalized tables
+    - `save_transcription()`, `save_translation()`, `save_sentences()`, `save_sentiments()`, `save_emotions()` - Helper functions
+  - **Query functions:**
+    - `get_all_results()` - All videos with metadata
+    - `get_videos_by_person()` - Filter by person name
+    - `get_date_range_results()` - Filter by date range
+    - `get_sentiment_statistics()` - Overall sentiment distribution
+    - `get_video_timeline()` - Sentiment timeline with configurable bucket size
+    - `get_person_sentiment_trends()` - Time-series sentiment data
+    - `get_emotion_breakdown()` - Sentence and video-level emotion analysis
+  - All functions support both V2 (normalized) and V1 (legacy JSON) schemas with automatic detection
+
+- **Batch API Endpoints**:
+  - `POST /batch/analyze` - Analyze videos from CSV data
+  - `POST /batch/upload` - Upload and parse CSV file
+  - `GET /batch/results` - Query analysis results (supports filters: person, date range, status)
+  - `GET /batch/people` - List all people with statistics
+  - `GET /batch/statistics` - Overall sentiment statistics
+  - `GET /batch/video/{video_url:path}/timeline` - Sentiment timeline for specific video
+  - `GET /batch/person/{name}/trends` - Sentiment trends over time for person
+  - `GET /batch/video/{video_url:path}/emotions` - Emotion analysis breakdown
+
+- **Schema Migration** ([migrate_schema.py](backend/migrate_schema.py)):
+  - Migrates from V1 (monolithic JSON) to V2 (normalized tables)
+  - Features:
+    - Automatic backup creation (`videos_backup` table)
+    - Dry-run mode for validation
+    - Rollback capability
+    - Detailed migration report with statistics
+    - Transaction safety and error handling
+  - Usage:
+    ```bash
+    # Dry run (validation only)
+    python backend/migrate_schema.py --dry-run
+
+    # Run migration
+    python backend/migrate_schema.py --db-path backend/batch_results.db
+
+    # Rollback if needed
+    python backend/migrate_schema.py --rollback
+    ```
+
+- **Testing** ([test_schema_migration.py](backend/test_schema_migration.py)):
+  ```bash
+  pytest backend/test_schema_migration.py -v
+  ```
+
 ## Development Commands
 
 ### Frontend (Next.js)
